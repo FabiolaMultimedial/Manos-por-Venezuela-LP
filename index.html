@@ -116,6 +116,10 @@ button{font-family:inherit;cursor:pointer;border:none;}
 .dot{width:11px;height:11px;border-radius:4px;display:inline-block;}
 .raffle-toolbar{display:flex;gap:10px;justify-content:center;margin-bottom:26px;flex-wrap:wrap;}
 .raffle-toolbar input{padding:10px 16px;border-radius:30px;border:1px solid var(--line);font-size:14px;width:220px;font-family:inherit;}
+.raffle-toolbar select{padding:10px 16px;border-radius:30px;border:1px solid var(--line);font-size:14px;font-family:inherit;background:#fff;color:var(--tinta);cursor:pointer;}
+.receipt-thumb{display:inline-block;width:34px;height:34px;border-radius:6px;overflow:hidden;border:1px solid var(--line);vertical-align:middle;cursor:pointer;}
+.receipt-thumb img{width:100%;height:100%;object-fit:cover;display:block;}
+.no-receipt{font-size:12px;color:var(--gris);}
 .seat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(40px,1fr));gap:7px;max-width:900px;margin:0 auto;}
 .seat{
   aspect-ratio:1;border-radius:8px 8px 3px 3px;
@@ -128,6 +132,26 @@ button{font-family:inherit;cursor:pointer;border:none;}
 .seat.paid{background:var(--rojo);}
 .seat.blocked{background:#C7CBD3;color:#fff;cursor:not-allowed;}
 .seat.avail:hover,.seat.pending:hover{transform:scale(1.12);cursor:pointer;}
+.seat.selected{outline:3px solid var(--tinta);outline-offset:1px;transform:scale(1.1);box-shadow:0 0 0 2px #fff inset;}
+
+.selection-bar{
+  position:sticky;bottom:14px;z-index:30;
+  max-width:520px;margin:18px auto 0;
+  background:var(--tinta);color:#fff;border-radius:14px;
+  padding:12px 18px;display:flex;align-items:center;justify-content:space-between;gap:14px;
+  box-shadow:0 10px 30px rgba(0,0,0,0.25);
+}
+.selection-bar .info{font-size:13.5px;font-weight:600;}
+.selection-bar .info b{color:var(--amarillo);}
+.selection-bar .actions{display:flex;gap:8px;}
+.selection-bar button{padding:8px 14px;border-radius:8px;font-size:13px;font-weight:700;}
+.selection-bar .btn-clear{background:transparent;color:#fff;opacity:0.75;}
+.selection-bar .btn-go{background:var(--amarillo);color:#5a4400;}
+
+.receipt-overlay{position:fixed;inset:0;background:rgba(15,17,23,0.78);display:flex;align-items:center;justify-content:center;z-index:60;padding:20px;}
+.receipt-box{position:relative;max-width:90vw;max-height:90vh;}
+.receipt-box img{max-width:90vw;max-height:85vh;border-radius:10px;display:block;}
+.receipt-box .modal-close{position:absolute;top:-14px;right:-14px;background:#fff;}
 
 /* popup */
 .overlay{position:fixed;inset:0;background:rgba(15,17,23,0.55);display:flex;align-items:center;justify-content:center;z-index:50;padding:18px;}
@@ -254,7 +278,7 @@ tr:last-child td{border-bottom:none;}
       <div class="section-head">
         <div class="section-eyebrow">Elige tu número</div>
         <h2>Mapa de la rifa</h2>
-        <p class="desc">Selecciona un número disponible (verde) para reservarlo y completar tu aporte.</p>
+        <p class="desc">Toca uno o varios números disponibles (verde) para seleccionarlos y reservarlos juntos.</p>
       </div>
       <div class="legend">
         <span><i class="dot" style="background:var(--verde)"></i>Disponible</span>
@@ -264,8 +288,22 @@ tr:last-child td{border-bottom:none;}
       </div>
       <div class="raffle-toolbar">
         <input type="text" id="seatSearch" placeholder="Buscar número (ej: 248)" oninput="renderGrid()">
+        <select id="seatFilter" onchange="renderGrid()">
+          <option value="all">Todos los números</option>
+          <option value="avail">Disponibles</option>
+          <option value="pending">Reservados</option>
+          <option value="paid">Pagados</option>
+          <option value="blocked">Bloqueados</option>
+        </select>
       </div>
       <div class="seat-grid" id="seatGrid"></div>
+      <div class="selection-bar" id="selectionBar" style="display:none;">
+        <div class="info"><b id="selCount">0</b> número(s) seleccionado(s) · <span id="selTotal">$0</span></div>
+        <div class="actions">
+          <button class="btn-clear" onclick="clearSelection()">Cancelar</button>
+          <button class="btn-go" onclick="openMultiPurchase()">Reservar</button>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -300,7 +338,7 @@ tr:last-child td{border-bottom:none;}
   <div class="modal">
     <div class="modal-close" onclick="closeModal()">✕</div>
     <h3 id="modalTitle">Número 0</h3>
-    <div class="modal-sub">Completa tus datos para reservar este número.</div>
+    <div class="modal-sub" id="modalSub">Completa tus datos para reservar este número.</div>
     <div class="field"><label>Nombre y apellido *</label><input id="fName" placeholder="Ej: Fabiola Veracierta"></div>
     <div class="field"><label>WhatsApp *</label><input id="fWhats" placeholder="+58 412 0000000"></div>
     <div class="field"><label>Instagram (opcional)</label><input id="fInsta" placeholder="@usuario"></div>
@@ -318,12 +356,19 @@ tr:last-child td{border-bottom:none;}
       <input type="file" id="fileInput" style="display:none" onchange="onFileChosen(this)">
     </div>
 
-    <button class="submit-btn" id="submitBtn" onclick="submitPurchase()">Reservar este número</button>
+    <button class="submit-btn" id="submitBtn" onclick="submitPurchase()">Reservar</button>
     <div class="note-tiny">Tu número quedará reservado por 24 horas mientras confirmamos el pago. Recibirás una confirmación por WhatsApp.</div>
   </div>
 </div>
 
 <div id="toastHost"></div>
+
+<div class="receipt-overlay" id="receiptOverlay" style="display:none;" onclick="if(event.target===this) closeReceipt()">
+  <div class="receipt-box">
+    <div class="modal-close" onclick="closeReceipt()">✕</div>
+    <img id="receiptImg" src="" alt="Comprobante">
+  </div>
+</div>
 
 <!-- ============ ADMIN ============ -->
 <div class="admin-screen" id="adminScreen">
@@ -333,7 +378,7 @@ tr:last-child td{border-bottom:none;}
       <p style="font-size:13px;color:var(--gris);margin-bottom:20px;">Acceso restringido — Manos por Venezuela</p>
       <div class="field"><label>Contraseña</label><input type="password" id="adminPass" placeholder="••••••••" onkeydown="if(event.key==='Enter')adminLogin()"></div>
       <button class="submit-btn" onclick="adminLogin()">Ingresar</button>
-      <div class="note-tiny" style="text-align:left;"></b></div>
+      <div class="note-tiny" style="text-align:left;">Demo: contraseña <b>manos2026</b></div>
       <a href="#" onclick="hideAdmin();return false;" style="display:block;text-align:center;margin-top:16px;font-size:13px;color:var(--azul);">← Volver al sitio</a>
     </div>
   </div>
@@ -380,7 +425,7 @@ tr:last-child td{border-bottom:none;}
         </div>
         <div style="overflow-x:auto;">
           <table>
-            <thead><tr><th>Número</th><th>Estado</th><th>Nombre</th><th>WhatsApp</th><th>Fecha</th><th>Pago</th><th>Acciones</th></tr></thead>
+            <thead><tr><th>Número</th><th>Estado</th><th>Nombre</th><th>WhatsApp</th><th>Fecha</th><th>Pago</th><th>Comprobante</th><th>Acciones</th></tr></thead>
             <tbody id="adminTableBody"></tbody>
           </table>
         </div>
@@ -477,8 +522,9 @@ let config = { price: 6000, goal: 3000000, alias: "manos.venezuela.mp", totalNum
 let updates = []; // [{date, text}]
 let numbers = {}; // { "1": {status, name, whats, insta, email, amount, date} }
 let history = [];
-let selectedSeat = null;
+let selectedSeats = [];
 let uploadedFile = false;
+let uploadedFileData = null;
 
 const STORAGE_KEY_CONFIG = "mpv:config";
 const STORAGE_KEY_NUMBERS = "mpv:numbers";
@@ -580,15 +626,19 @@ function renderContribList(){
 
 function renderGrid(){
   const search = (document.getElementById('seatSearch')?.value||"").trim();
+  const filter = document.getElementById('seatFilter')?.value || 'all';
   const host = document.getElementById('seatGrid');
   let html = "";
   for(let i=1;i<=config.totalNumbers;i++){
     if(search && !String(i).includes(search)) continue;
     const v = numbers[i] || {status:'avail'};
-    const cls = v.status==='avail'?'avail':v.status==='pending'?'pending':v.status==='paid'?'paid':'blocked';
+    if(filter!=='all' && v.status!==filter) continue;
+    let cls = v.status==='avail'?'avail':v.status==='pending'?'pending':v.status==='paid'?'paid':'blocked';
+    if(selectedSeats.includes(i)) cls += ' selected';
     html += `<div class="seat ${cls}" onclick="onSeatClick(${i})">${i}</div>`;
   }
   host.innerHTML = html || '<div style="grid-column:1/-1;text-align:center;color:var(--gris);">Sin resultados</div>';
+  updateSelectionBar();
 }
 
 function renderTrust(){
@@ -611,29 +661,89 @@ function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<
 
 /* ======================= PURCHASE FLOW ======================= */
 function onSeatClick(n){
-  const v = numbers[n];
-  if(!v || v.status==='blocked'){ return; }
+  const v = numbers[n] || {status:'avail'};
+  if(v.status==='blocked'){ return; }
   if(v.status==='paid'){ showToast('Este número ya fue pagado y confirmado.'); return; }
   if(v.status==='pending'){ showToast('Este número está reservado, pendiente de pago.'); return; }
-  selectedSeat = n;
-  document.getElementById('modalTitle').textContent = 'Número '+n;
-  document.getElementById('modalPrice').textContent = fmt(config.price);
+  const idx = selectedSeats.indexOf(n);
+  if(idx>-1) selectedSeats.splice(idx,1);
+  else selectedSeats.push(n);
+  renderGrid();
+}
+
+function updateSelectionBar(){
+  const bar = document.getElementById('selectionBar');
+  if(!bar) return;
+  if(selectedSeats.length===0){ bar.style.display='none'; return; }
+  bar.style.display='flex';
+  document.getElementById('selCount').textContent = selectedSeats.length;
+  document.getElementById('selTotal').textContent = fmt(config.price * selectedSeats.length);
+}
+
+function clearSelection(){
+  selectedSeats = [];
+  renderGrid();
+}
+
+function openMultiPurchase(){
+  if(!selectedSeats.length) return;
+  const sorted = [...selectedSeats].sort((a,b)=>a-b);
+  document.getElementById('modalTitle').textContent = sorted.length===1 ? ('Número '+sorted[0]) : (sorted.length+' números: '+sorted.join(', '));
+  document.getElementById('modalSub').textContent = sorted.length===1
+    ? 'Completa tus datos para reservar este número.'
+    : 'Completa tus datos para reservar estos '+sorted.length+' números juntos.';
+  document.getElementById('modalPrice').textContent = sorted.length>1
+    ? fmt(config.price*sorted.length)+' ('+fmt(config.price)+' c/u)'
+    : fmt(config.price);
   document.getElementById('modalAlias').textContent = config.alias;
   document.getElementById('fName').value='';
   document.getElementById('fWhats').value='';
   document.getElementById('fInsta').value='';
   document.getElementById('fEmail').value='';
   uploadedFile=false;
+  uploadedFileData=null;
   document.getElementById('uploadBox').textContent='📎 Subir comprobante';
   document.getElementById('uploadBox').classList.remove('has-file');
   document.getElementById('purchaseOverlay').style.display='flex';
 }
-function closeModal(){ document.getElementById('purchaseOverlay').style.display='none'; selectedSeat=null; }
+function closeModal(){ document.getElementById('purchaseOverlay').style.display='none'; }
 function onFileChosen(input){
   if(input.files && input.files[0]){
-    uploadedFile=true;
-    document.getElementById('uploadBox').textContent='✓ '+input.files[0].name;
-    document.getElementById('uploadBox').classList.add('has-file');
+    const file = input.files[0];
+    document.getElementById('uploadBox').textContent='⏳ Procesando '+file.name+'...';
+    const reader = new FileReader();
+    reader.onload = function(e){
+      const img = new Image();
+      img.onload = function(){
+        const maxW = 900;
+        const scale = Math.min(1, maxW/img.width);
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.width*scale);
+        canvas.height = Math.round(img.height*scale);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        uploadedFileData = canvas.toDataURL('image/jpeg', 0.7);
+        uploadedFile = true;
+        document.getElementById('uploadBox').textContent='✓ '+file.name;
+        document.getElementById('uploadBox').classList.add('has-file');
+      };
+      img.onerror = function(){
+        // No es una imagen (ej: PDF); igual lo guardamos tal cual si no es muy pesado.
+        if(file.size < 1500000){
+          uploadedFileData = e.target.result;
+          uploadedFile = true;
+          document.getElementById('uploadBox').textContent='✓ '+file.name;
+          document.getElementById('uploadBox').classList.add('has-file');
+        } else {
+          uploadedFileData = null;
+          uploadedFile = false;
+          document.getElementById('uploadBox').textContent='📎 Subir comprobante';
+          showToast('El archivo es muy pesado. Sube una imagen (JPG/PNG) más liviana.');
+        }
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
   }
 }
 
@@ -641,21 +751,31 @@ async function submitPurchase(){
   const name = document.getElementById('fName').value.trim();
   const whats = document.getElementById('fWhats').value.trim();
   if(!name || !whats){ showToast('Completa nombre y WhatsApp para continuar.'); return; }
-  if(!selectedSeat) return;
-  numbers[selectedSeat] = {
-    status:'pending',
-    name, whats,
-    insta: document.getElementById('fInsta').value.trim(),
-    email: document.getElementById('fEmail').value.trim(),
-    amount: config.price,
-    date: new Date().toLocaleDateString('es-AR'),
-    reservedAt: Date.now()
-  };
+  if(!selectedSeats.length) return;
+  const insta = document.getElementById('fInsta').value.trim();
+  const email = document.getElementById('fEmail').value.trim();
+  const dateStr = new Date().toLocaleDateString('es-AR');
+  const reservedAt = Date.now();
+  const receipt = uploadedFileData || '';
+  const seats = [...selectedSeats];
+  seats.forEach(seat=>{
+    numbers[seat] = {
+      status:'pending',
+      name, whats, insta, email,
+      amount: config.price,
+      date: dateStr,
+      reservedAt,
+      receipt
+    };
+  });
   await persistNumbers();
-  logHistory(`Número ${selectedSeat} reservado por ${name}`);
+  logHistory(`Número(s) ${seats.join(', ')} reservado(s) por ${name}`);
+  selectedSeats = [];
   renderAll();
   closeModal();
-  showToast('¡Número reservado! Te contactaremos por WhatsApp para confirmar el pago.');
+  showToast(seats.length>1
+    ? `¡${seats.length} números reservados! Te contactaremos por WhatsApp para confirmar el pago.`
+    : '¡Número reservado! Te contactaremos por WhatsApp para confirmar el pago.');
 }
 
 function showToast(msg){
@@ -673,7 +793,7 @@ function autoReleaseCheck(){
   const now = Date.now();
   Object.entries(numbers).forEach(([k,v])=>{
     if(v.status==='pending' && v.reservedAt && (now-v.reservedAt) > 24*60*60*1000){
-      numbers[k] = {status:'avail', name:'', whats:'', insta:'', email:'', amount:0, date:''};
+      numbers[k] = {status:'avail', name:'', whats:'', insta:'', email:'', amount:0, date:'', receipt:''};
       changed=true;
       logHistory(`Número ${k} liberado automáticamente (24h sin pago)`);
     }
@@ -736,6 +856,9 @@ function renderAdminTable(){
                   v.status==='pending'?'<span class="badge pending">Reservado</span>':
                   v.status==='paid'?'<span class="badge paid">Pagado</span>':'<span class="badge blocked">Bloqueado</span>';
     const pago = v.status==='paid'?'Confirmado':v.status==='pending'?'Pendiente':'-';
+    const receiptCell = v.receipt
+      ? `<div class="receipt-thumb" onclick="viewReceipt(${k})"><img src="${v.receipt}" alt="Comprobante ${k}"></div>`
+      : `<span class="no-receipt">Sin comprobante</span>`;
     return `<tr>
       <td><b>${k}</b></td>
       <td>${badge}</td>
@@ -743,6 +866,7 @@ function renderAdminTable(){
       <td>${v.whats?escapeHtml(v.whats):'-'}</td>
       <td>${v.date||'-'}</td>
       <td>${pago}</td>
+      <td>${receiptCell}</td>
       <td><div class="row-actions">
         ${v.status==='pending'?`<button class="confirm" onclick="confirmPayment(${k})">Confirmar pago</button><button class="release" onclick="releaseNumber(${k})">Liberar</button>`:''}
         ${v.status==='avail'?`<button class="block" onclick="blockNumber(${k})">Bloquear</button>`:''}
@@ -751,6 +875,17 @@ function renderAdminTable(){
       </div></td>
     </tr>`;
   }).join('');
+}
+
+function viewReceipt(n){
+  const v = numbers[n];
+  if(!v || !v.receipt) return;
+  document.getElementById('receiptImg').src = v.receipt;
+  document.getElementById('receiptOverlay').style.display='flex';
+}
+function closeReceipt(){
+  document.getElementById('receiptOverlay').style.display='none';
+  document.getElementById('receiptImg').src='';
 }
 
 async function confirmPayment(n){
@@ -762,7 +897,7 @@ async function confirmPayment(n){
   showToast('Pago confirmado, número '+n);
 }
 async function releaseNumber(n){
-  numbers[n] = {status:'avail', name:'', whats:'', insta:'', email:'', amount:0, date:''};
+  numbers[n] = {status:'avail', name:'', whats:'', insta:'', email:'', amount:0, date:'', receipt:''};
   await persistNumbers();
   logHistory(`Número ${n} liberado manualmente`);
   renderAll();
@@ -786,7 +921,7 @@ async function addNumbersPrompt(){
   if(!n || n<=0) return;
   const start = config.totalNumbers+1;
   for(let i=start;i<start+n;i++){
-    numbers[i] = {status:'avail', name:'', whats:'', insta:'', email:'', amount:0, date:''};
+    numbers[i] = {status:'avail', name:'', whats:'', insta:'', email:'', amount:0, date:'', receipt:''};
   }
   config.totalNumbers += n;
   await persistNumbers(); await persistConfig();
