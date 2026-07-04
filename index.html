@@ -121,14 +121,17 @@ button{font-family:inherit;cursor:pointer;border:none;}
 .receipt-thumb{display:inline-block;width:34px;height:34px;border-radius:6px;overflow:hidden;border:1px solid var(--line);vertical-align:middle;cursor:pointer;}
 .receipt-thumb img{width:100%;height:100%;object-fit:cover;display:block;}
 .no-receipt{font-size:12px;color:var(--gris);}
-.prize-card{position:relative;max-width:280px;margin:0 auto;aspect-ratio:3/4;border-radius:20px;overflow:hidden;background:#0f1117;box-shadow:0 18px 40px -14px rgba(0,0,0,0.5);cursor:pointer;display:block;color:#fff;text-decoration:none;}
+.prize-card{position:relative;flex:0 0 240px;max-width:240px;aspect-ratio:3/4;border-radius:20px;overflow:hidden;background:#0f1117;box-shadow:0 18px 40px -14px rgba(0,0,0,0.5);cursor:pointer;display:block;color:#fff;text-decoration:none;scroll-snap-align:start;}
+.prizes-track{display:flex;gap:18px;overflow-x:auto;scroll-behavior:smooth;scroll-snap-type:x mandatory;padding:4px 2px 14px;-ms-overflow-style:none;scrollbar-width:none;}
+.prizes-track::-webkit-scrollbar{display:none;}
+@media(max-width:700px){ .prize-card{flex-basis:74%;max-width:74%;} }
 .prize-card img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;}
-.prize-card:before{content:'';position:absolute;inset:0;background:linear-gradient(180deg, rgba(8,10,16,0.05) 0%, rgba(8,10,16,0.15) 45%, rgba(8,10,16,0.92) 100%);}
+.prize-card:before{content:'';position:absolute;inset:0;background:linear-gradient(180deg, rgba(6,8,14,0.02) 0%, rgba(6,8,14,0.05) 35%, rgba(6,8,14,0.55) 62%, rgba(6,8,14,0.96) 100%);}
 .prize-badge{position:absolute;top:14px;left:14px;z-index:2;display:inline-flex;align-items:center;gap:6px;background:#fff;color:var(--tinta);font-size:11.5px;font-weight:700;padding:6px 12px;border-radius:30px;}
 .prize-ig{position:absolute;top:14px;right:14px;z-index:2;width:30px;height:30px;border-radius:50%;background:rgba(255,255,255,0.16);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;font-size:14px;}
-.prize-bottom{position:absolute;left:0;right:0;bottom:0;z-index:2;padding:16px 18px 18px;}
+.prize-bottom{position:absolute;left:0;right:0;bottom:0;z-index:2;padding:34px 18px 18px;text-shadow:0 1px 6px rgba(0,0,0,0.55);}
 .prize-name{font-family:'Fraunces',serif;font-weight:600;font-size:19px;line-height:1.2;}
-.prize-desc{font-size:12.5px;opacity:0.85;margin-top:5px;line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+.prize-desc{font-size:12.5px;opacity:0.92;margin-top:5px;line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
 .prize-social{font-size:12.5px;font-weight:700;margin-top:10px;opacity:0.95;display:inline-flex;align-items:center;gap:5px;text-decoration:underline;text-underline-offset:3px;}
 .prize-dot{width:7px;height:7px;border-radius:50%;background:rgba(255,255,255,0.3);cursor:pointer;}
 .prize-dot.active{background:#fff;}
@@ -355,8 +358,8 @@ tr:last-child td{border-bottom:none;}
         <h2>Emprendimientos que se suman</h2>
         <p class="desc">Cada uno aporta un premio para esta rifa. Tócalos para conocerlos en Instagram.</p>
       </div>
-      <div id="prizesCarousel"></div>
-      <div style="display:flex;align-items:center;justify-content:center;gap:14px;margin-top:16px;">
+      <div id="prizesCarousel" class="prizes-track"></div>
+      <div style="display:flex;align-items:center;justify-content:center;gap:14px;margin-top:6px;">
         <button style="background:#F0EEE8;color:var(--tinta);padding:8px 16px;border-radius:8px;font-size:16px;" onclick="prizeNav(-1)">←</button>
         <div id="prizesDots" style="display:flex;gap:6px;"></div>
         <button style="background:#F0EEE8;color:var(--tinta);padding:8px 16px;border-radius:8px;font-size:16px;" onclick="prizeNav(1)">→</button>
@@ -739,6 +742,7 @@ async function loadAll(){
   renderAll();
   startCountdown();
   startQuienesCarousel();
+  startPrizesCarousel();
   maybeShowAnnouncement();
 }
 
@@ -907,12 +911,10 @@ function instagramUrl(handle){
 function renderPrizes(){
   const host = document.getElementById('prizesCarousel');
   if(!host) return;
-  if(!prizes.length){ host.innerHTML=''; return; }
-  if(prizeIndex >= prizes.length) prizeIndex = 0;
-  if(prizeIndex < 0) prizeIndex = prizes.length-1;
-  const p = prizes[prizeIndex];
-  const link = instagramUrl(p.social);
-  host.innerHTML = `
+  if(!prizes.length){ host.innerHTML=''; const d=document.getElementById('prizesDots'); if(d) d.innerHTML=''; return; }
+  host.innerHTML = prizes.map((p)=>{
+    const link = instagramUrl(p.social);
+    return `
     <a class="prize-card" ${link?`href="${link}" target="_blank" rel="noopener"`:''}>
       ${p.img ? `<img src="${p.img}" alt="${escapeHtml(p.name||'')}">` : ''}
       <div class="prize-badge">★ Emprendimiento</div>
@@ -923,16 +925,43 @@ function renderPrizes(){
         ${link ? `<div class="prize-social">Conocé más <span style="font-size:14px;">→</span></div>` : ''}
       </div>
     </a>`;
+  }).join('');
   const dots = document.getElementById('prizesDots');
   if(dots){
     dots.innerHTML = prizes.map((_,i)=>`<span class="prize-dot ${i===prizeIndex?'active':''}" onclick="goToPrize(${i})"></span>`).join('');
   }
+  scrollToPrize(prizeIndex, false);
+}
+function scrollToPrize(i, smooth){
+  const track = document.getElementById('prizesCarousel');
+  if(!track) return;
+  const card = track.children[i];
+  if(!card) return;
+  track.scrollTo({ left: card.offsetLeft - track.offsetLeft, behavior: smooth===false ? 'auto' : 'smooth' });
+  const dots = document.querySelectorAll('#prizesDots .prize-dot');
+  dots.forEach((d,idx)=>d.classList.toggle('active', idx===i));
 }
 function prizeNav(dir){
-  prizeIndex += dir;
-  renderPrizes();
+  if(!prizes.length) return;
+  prizeIndex = (prizeIndex + dir + prizes.length) % prizes.length;
+  scrollToPrize(prizeIndex, true);
+  restartPrizesAutoplay();
 }
-function goToPrize(i){ prizeIndex = i; renderPrizes(); }
+function goToPrize(i){
+  prizeIndex = i;
+  scrollToPrize(prizeIndex, true);
+  restartPrizesAutoplay();
+}
+let prizesTimer = null;
+function startPrizesCarousel(){
+  if(prizesTimer) clearInterval(prizesTimer);
+  prizesTimer = setInterval(()=>{
+    if(!prizes.length) return;
+    prizeIndex = (prizeIndex + 1) % prizes.length;
+    scrollToPrize(prizeIndex, true);
+  }, 3500);
+}
+function restartPrizesAutoplay(){ startPrizesCarousel(); }
 
 /* ======================= COUNTDOWN ======================= */
 let countdownTimer = null;
