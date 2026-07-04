@@ -129,7 +129,7 @@ button{font-family:inherit;cursor:pointer;border:none;}
 .prize-bottom{position:absolute;left:0;right:0;bottom:0;z-index:2;padding:16px 18px 18px;}
 .prize-name{font-family:'Fraunces',serif;font-weight:600;font-size:19px;line-height:1.2;}
 .prize-desc{font-size:12.5px;opacity:0.85;margin-top:5px;line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
-.prize-social{font-size:12.5px;font-weight:600;margin-top:8px;opacity:0.9;display:flex;align-items:center;gap:5px;}
+.prize-social{font-size:12.5px;font-weight:700;margin-top:10px;opacity:0.95;display:inline-flex;align-items:center;gap:5px;text-decoration:underline;text-underline-offset:3px;}
 .prize-dot{width:7px;height:7px;border-radius:50%;background:rgba(255,255,255,0.3);cursor:pointer;}
 .prize-dot.active{background:#fff;}
 
@@ -920,7 +920,7 @@ function renderPrizes(){
       <div class="prize-bottom">
         <div class="prize-name">${escapeHtml(p.name||'')}</div>
         ${p.description ? `<div class="prize-desc">${escapeHtml(p.description)}</div>` : ''}
-        ${p.social ? `<div class="prize-social">📷 ${escapeHtml(p.social)}</div>` : ''}
+        ${link ? `<div class="prize-social">Conocé más <span style="font-size:14px;">→</span></div>` : ''}
       </div>
     </a>`;
   const dots = document.getElementById('prizesDots');
