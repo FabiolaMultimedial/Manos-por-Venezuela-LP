@@ -296,16 +296,6 @@ tr:last-child td{border-bottom:none;}
           <div class="progress-track"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
           <div class="progress-meta"><span id="progressText">$0 de $0</span><span id="progressPct">0%</span></div>
         </div>
-
-        <div id="prizesSection" style="display:none;">
-          <div class="eyebrow" style="margin-bottom:10px;">Emprendimientos que se suman</div>
-          <div id="prizesCarousel"></div>
-          <div style="display:flex;align-items:center;justify-content:center;gap:14px;margin-top:14px;">
-            <button class="btn-clear" style="background:rgba(255,255,255,0.12);color:#fff;padding:6px 14px;border-radius:8px;" onclick="prizeNav(-1)">←</button>
-            <div id="prizesDots" style="display:flex;gap:6px;"></div>
-            <button class="btn-clear" style="background:rgba(255,255,255,0.12);color:#fff;padding:6px 14px;border-radius:8px;" onclick="prizeNav(1)">→</button>
-          </div>
-        </div>
       </div>
     </div>
   </div>
@@ -353,6 +343,23 @@ tr:last-child td{border-bottom:none;}
           <button class="btn-clear" onclick="clearSelection()">Cancelar</button>
           <button class="btn-go" onclick="openMultiPurchase()">Reservar</button>
         </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- PREMIOS (debajo de los números de la rifa) -->
+  <section class="section" id="prizesSection" style="display:none;background:#fff;border-bottom:1px solid var(--line);">
+    <div class="container">
+      <div class="section-head">
+        <div class="section-eyebrow">Gracias a ellos</div>
+        <h2>Emprendimientos que se suman</h2>
+        <p class="desc">Cada uno aporta un premio para esta rifa. Tócalos para conocerlos en Instagram.</p>
+      </div>
+      <div id="prizesCarousel"></div>
+      <div style="display:flex;align-items:center;justify-content:center;gap:14px;margin-top:16px;">
+        <button style="background:#F0EEE8;color:var(--tinta);padding:8px 16px;border-radius:8px;font-size:16px;" onclick="prizeNav(-1)">←</button>
+        <div id="prizesDots" style="display:flex;gap:6px;"></div>
+        <button style="background:#F0EEE8;color:var(--tinta);padding:8px 16px;border-radius:8px;font-size:16px;" onclick="prizeNav(1)">→</button>
       </div>
     </div>
   </section>
