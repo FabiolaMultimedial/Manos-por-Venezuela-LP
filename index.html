@@ -281,7 +281,7 @@ tr:last-child td{border-bottom:none;}
         <h1>Cada número ayuda a <em>una familia venezolana.</em></h1>
         <p class="sub">Compra tu número, sigue el progreso en vivo y entérate exactamente a dónde va cada aporte.</p>
         <div class="cta-row" style="display:flex;gap:12px;flex-wrap:wrap;">
-          <button class="btn btn-primary" onclick="document.getElementById('rifa').scrollIntoView({behavior:'smooth'})">Comprar un número de la rifa </button>
+          <button class="btn btn-primary" onclick="document.getElementById('rifa').scrollIntoView({behavior:'smooth'})">Comprar un número de la rifa →</button>
           <button class="btn" id="heroPrizesBtn" style="display:none;background:rgba(255,255,255,0.12);color:#fff;border:1px solid rgba(255,255,255,0.35);" onclick="document.getElementById('prizesSection').scrollIntoView({behavior:'smooth'})">🎁 Emprendimientos</button>
         </div>
 
@@ -429,7 +429,7 @@ tr:last-child td{border-bottom:none;}
     </div>
 
     <div class="field">
-      <label>Comprobante de pago (opcional por ahora)</label>
+      <label>Comprobante de pago <span style="color:var(--rojo);">*obligatorio</span></label>
       <div class="upload-box" id="uploadBox" onclick="document.getElementById('fileInput').click()">📎 Subir comprobante</div>
       <input type="file" id="fileInput" style="display:none" onchange="onFileChosen(this)">
     </div>
@@ -1092,11 +1092,12 @@ async function submitPurchase(){
   const whats = document.getElementById('fWhats').value.trim();
   if(!name || !whats){ showToast('Completa nombre y WhatsApp para continuar.'); return; }
   if(!selectedSeats.length) return;
+  const receipt = uploadedFileData || '';
+  if(!receipt){ showToast('Debes adjuntar el comprobante de pago para continuar.'); return; }
   const insta = document.getElementById('fInsta').value.trim();
   const email = document.getElementById('fEmail').value.trim();
   const dateStr = new Date().toLocaleDateString('es-AR');
   const reservedAt = Date.now();
-  const receipt = uploadedFileData || '';
   const seats = [...selectedSeats];
   seats.forEach(seat=>{
     numbers[seat] = {
