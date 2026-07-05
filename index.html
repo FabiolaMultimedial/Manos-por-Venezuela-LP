@@ -52,7 +52,7 @@ button{font-family:inherit;cursor:pointer;border:none;}
    radial-gradient(circle at 85% 15%, rgba(228,3,46,0.18), transparent 45%);
   pointer-events:none;
 }
-.tricolor-bar{height:6px;width:100%;background:linear-gradient(90deg, var(--amarillo) 33.3%, var(--azul) 33.3% 66.6%, var(--rojo) 66.6% 100%);}
+.tricolor-bar{height:6px;width:100%;background:linear-gradient(90deg,var(--amarillo) 0 33.3%, var(--azul) 33.3% 66.6%, var(--rojo) 66.6% 100%);}
 .nav{display:flex;align-items:center;justify-content:space-between;padding:20px 0 0;position:relative;z-index:2;}
 .logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:18px;}
 .logo-mark{width:38px;height:38px;flex-shrink:0;object-fit:contain;}
@@ -280,8 +280,9 @@ tr:last-child td{border-bottom:none;}
         <div class="eyebrow">🇻🇪 Rifa solidaria · 500 números</div>
         <h1>Cada número ayuda a <em>una familia venezolana.</em></h1>
         <p class="sub">Compra tu número, sigue el progreso en vivo y entérate exactamente a dónde va cada aporte.</p>
-        <div class="cta-row">
+        <div class="cta-row" style="display:flex;gap:12px;flex-wrap:wrap;">
           <button class="btn btn-primary" onclick="document.getElementById('rifa').scrollIntoView({behavior:'smooth'})">Comprar un número de la rifa →</button>
+          <button class="btn" id="heroPrizesBtn" style="display:none;background:rgba(255,255,255,0.12);color:#fff;border:1px solid rgba(255,255,255,0.35);" onclick="document.getElementById('prizesSection').scrollIntoView({behavior:'smooth'})">🎁 Emprendimientos</button>
         </div>
 
         <div class="counter-card" id="countdownCard" style="display:none;margin-bottom:16px;">
@@ -803,6 +804,8 @@ function renderSectionVisibility(){
   if(quienes) quienes.style.display = ((config.quienesSomos && config.quienesSomos.trim()) || (config.quienesFotos && config.quienesFotos.length)) ? 'block' : 'none';
   const prizesWrap = document.getElementById('prizesSection');
   if(prizesWrap) prizesWrap.style.display = (prizes && prizes.length) ? 'block' : 'none';
+  const heroPrizesBtn = document.getElementById('heroPrizesBtn');
+  if(heroPrizesBtn) heroPrizesBtn.style.display = (prizes && prizes.length) ? 'inline-flex' : 'none';
 }
 
 function totalRaised(){
