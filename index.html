@@ -127,6 +127,7 @@ button{font-family:inherit;cursor:pointer;border:none;}
 .sponsors-marquee{width:100%;overflow:hidden;position:relative;-webkit-mask-image:linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);mask-image:linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);}
 .sponsors-track{display:flex;width:max-content;animation:sponsorsScroll linear infinite;}
 .sponsors-track:hover{animation-play-state:paused;}
+.sponsors-track.static{width:100%;justify-content:center;flex-wrap:wrap;animation:none;}
 @keyframes sponsorsScroll{ from{transform:translateX(0);} to{transform:translateX(-50%);} }
 .sponsor-logo-item{display:flex;flex-direction:column;align-items:center;gap:8px;padding:0 26px;flex:0 0 auto;}
 .sponsor-logo-item img{width:62px;height:62px;border-radius:50%;object-fit:cover;border:1px solid var(--line);background:#fff;}
@@ -331,10 +332,9 @@ tr:last-child td{border-bottom:none;}
     <div class="container">
 
       <div id="sponsorsBlock" style="display:none;">
-        <div class="section-head" style="margin-bottom:26px;">
-          <div class="section-eyebrow">Comunidad</div>
-          <h2>Emprendimientos que se han sumado</h2>
-          <p class="desc">Estos son todos los emprendimientos que decidieron acompañar esta causa.</p>
+        <div style="text-align:center;margin-bottom:18px;">
+          <span style="font-size:12.5px;text-transform:uppercase;letter-spacing:0.1em;color:var(--rojo);font-weight:700;">Comunidad</span>
+          <span style="font-size:12.5px;color:var(--gris);margin-left:6px;">· Emprendimientos que se han sumado</span>
         </div>
         <div class="sponsors-marquee">
           <div class="sponsors-track" id="sponsorsTrack"></div>
@@ -1039,10 +1039,18 @@ function renderSponsorsMarquee(){
       ${s.logo ? `<img src="${s.logo}" alt="${escapeHtml(s.name||'')}">` : `<div style="width:62px;height:62px;border-radius:50%;background:#F0EEE8;"></div>`}
       <span>${escapeHtml(s.name||'')}</span>
     </div>`;
-  // duplicamos la lista para que el loop sea infinito y continuo
-  track.innerHTML = sponsors.map(itemHtml).join('') + sponsors.map(itemHtml).join('');
-  const duration = Math.max(14, sponsors.length * 3.2);
-  track.style.animationDuration = duration + 's';
+  const enoughToScroll = sponsors.length > 5;
+  if(enoughToScroll){
+    // duplicamos la lista para que el loop sea infinito y continuo
+    track.innerHTML = sponsors.map(itemHtml).join('') + sponsors.map(itemHtml).join('');
+    track.classList.remove('static');
+    const duration = Math.max(14, sponsors.length * 3.2);
+    track.style.animationDuration = duration + 's';
+  } else {
+    track.innerHTML = sponsors.map(itemHtml).join('');
+    track.classList.add('static');
+    track.style.animationDuration = '';
+  }
 }
 
 /* ======================= COUNTDOWN ======================= */
