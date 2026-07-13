@@ -444,16 +444,16 @@ tr:last-child td{border-bottom:none;}
     <h3 id="modalTitle">Número 0</h3>
     <div class="modal-sub" id="modalSub">Completa tus datos para reservar este número.</div>
     <div class="field"><label>Nombre y apellido *</label><input id="fName" placeholder="Ej: Fabiola Multimedial"></div>
-    <div class="field"><label>WhatsApp *</label><input id="fWhats" placeholder="+540000000000"></div>
+    <div class="field"><label>WhatsApp *</label><input id="fWhats" placeholder="+58 412 0000000"></div>
     <div class="field"><label>Instagram (opcional)</label><input id="fInsta" placeholder="@usuario"></div>
     <div class="field"><label>Email (opcional)</label><input id="fEmail" placeholder="correo@ejemplo.com"></div>
 
     <div class="pay-box">
       <div>Monto a pagar: <b id="modalPrice">$6.000</b></div>
-      <div>Titular de la cuenta<b id="modalAlias"Wilfredo Matson</b></div>
-      <div>Alias<b id="modalAlias"MANOSPORVENEZUELALP</b></div>
-      <div>CBU<b id="modalAlias"4530000800012541869466</b></div>
-    
+      <div>Alias de transferencia: <b id="modalAlias">MANOSPORVENEZUELALP</b></div>
+      <div>Titular de la cuenta: <b>Wilfredo Matson</b></div>
+      <div>CBU: <b>4530000800012541869466</b></div>
+      <div>También puedes pagar con Mercado Pago al confirmar.</div>
     </div>
 
     <div class="field">
@@ -736,7 +736,7 @@ window.dispatchEvent(new Event('firebaseReady'));
 /* ======================= STATE / STORAGE ======================= */
 const TOTAL_NUMBERS_DEFAULT = 500;
 let config = {
-  price: 6000, goal: 3000000, alias: "manos.venezuela.mp", totalNumbers: TOTAL_NUMBERS_DEFAULT,
+  price: 6000, goal: 3000000, alias: "MANOSPORVENEZUELALP", totalNumbers: TOTAL_NUMBERS_DEFAULT,
   totalSent: 0, shipments: 0,
   showAportes: false, showTransparencia: false,
   raffleEnabled: false, raffleDate: "",
