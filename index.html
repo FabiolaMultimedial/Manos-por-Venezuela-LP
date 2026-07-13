@@ -287,7 +287,7 @@ tr:last-child td{border-bottom:none;}
       </nav>
       <div class="hero-inner">
         <img class="hero-logo" src="logo.png" alt="Manos por Venezuela">
-        <div class="eyebrow">🇻🇪 Rifa solidaria · 500 números</div>
+        <div class="eyebrow">🇻🇪 Rifa solidaria · 350 números</div>
         <h1>Cada número ayuda a <em>una familia venezolana.</em></h1>
         <p class="sub">Compra tu número, sigue el progreso en vivo y entérate exactamente a dónde va cada aporte.</p>
         <div class="cta-row" style="display:flex;gap:12px;flex-wrap:wrap;">
@@ -683,7 +683,7 @@ tr:last-child td{border-bottom:none;}
           <div class="field"><label>Meta económica</label><input id="cfgGoal" type="number"></div>
           <div class="field"><label>Alias de transferencia</label><input id="cfgAlias" type="text"></div>
           <div class="field"><label>Instagram (aparece en el comprobante de reserva)</label><input id="cfgInstagram" type="text" placeholder="@manosporvenezuelalp"></div>
-          <div class="field"><label>Total de números en la rifa</label><input id="cfgTotalNumbers" type="number" readonly style="background:#F4F2EC;"></div>
+          <div class="field"><label>Total de números en la rifa</label><input id="cfgTotalNumbers" type="number" min="1" max="500"></div>
         </div>
         <button class="btn btn-primary" style="background:var(--azul);color:#fff;" onclick="saveConfig()">Guardar configuración</button>
       </div>
@@ -747,9 +747,9 @@ window.dispatchEvent(new Event('firebaseReady'));
 
 <script>
 /* ======================= STATE / STORAGE ======================= */
-const TOTAL_NUMBERS_DEFAULT = 500;
+const TOTAL_NUMBERS_DEFAULT = 350;
 let config = {
-  price: 6000, goal: 3000000, alias: "MANOSPORVENEZUELALP", totalNumbers: TOTAL_NUMBERS_DEFAULT,
+  price: 6000, goal: 2100000, alias: "MANOSPORVENEZUELALP", totalNumbers: TOTAL_NUMBERS_DEFAULT,
   instagram: "@manosporvenezuelalp",
   totalSent: 0, shipments: 0,
   showAportes: false, showTransparencia: false,
@@ -1206,7 +1206,7 @@ async function submitPurchase(){
   try{
     /* IMPORTANTE: el comprobante (imagen) se guarda en un documento propio por
        número (mpv:receipt:<numero>), separado del documento "mpv:numbers" que
-       tiene el estado de los 500 números. Antes el comprobante se guardaba
+       tiene el estado de todos los números de la rifa. Antes el comprobante se guardaba
        DENTRO de "mpv:numbers", así que cada reserva nueva tenía que volver a
        subir TODOS los comprobantes de todas las reservas anteriores otra vez
        (el documento crecía sin parar). Eso era lo que hacía que en el celular,
@@ -1573,18 +1573,71 @@ async function addNumbersPrompt(){
 }
 
 async function saveConfig(){
-  config.price = Number(document.getElementById('cfgPrice').value)||config.price;
-  config.goal = Number(document.getElementById('cfgGoal').value)||config.goal;
-  config.alias = document.getElementById('cfgAlias').value.trim()||config.alias;
+  const totalInput = document.getElementById('cfgTotalNumbers');
+  const nuevoTotal = Number(totalInput.value);
+
+  if(!Number.isInteger(nuevoTotal) || nuevoTotal < 1){
+    showToast('Ingresa una cantidad válida de números.');
+    totalInput.value = config.totalNumbers;
+    return;
+  }
+
+  const totalAnterior = Number(config.totalNumbers) || TOTAL_NUMBERS_DEFAULT;
+
+  // Antes de reducir, comprueba que no haya números vendidos o reservados
+  // por encima del nuevo límite.
+  const ocupadosFueraDelLimite = Object.entries(numbers).filter(([numero, datos]) =>
+    Number(numero) > nuevoTotal &&
+    datos &&
+    (datos.status === 'paid' || datos.status === 'pending')
+  );
+
+  if(ocupadosFueraDelLimite.length){
+    const lista = ocupadosFueraDelLimite.map(([numero]) => numero).join(', ');
+    showToast('No se puede reducir: estos números están vendidos o reservados: ' + lista);
+    totalInput.value = totalAnterior;
+    return;
+  }
+
+  // Si se reduce el total, elimina del mapa los números sobrantes.
+  if(nuevoTotal < totalAnterior){
+    for(let i = nuevoTotal + 1; i <= totalAnterior; i++){
+      delete numbers[i];
+      window.storage.delete('mpv:receipt:' + i, true).catch(()=>{});
+    }
+  }
+
+  // Si se aumenta el total, crea los números nuevos como disponibles.
+  if(nuevoTotal > totalAnterior){
+    for(let i = totalAnterior + 1; i <= nuevoTotal; i++){
+      numbers[i] = {
+        status:'avail',
+        name:'',
+        whats:'',
+        insta:'',
+        email:'',
+        amount:0,
+        date:'',
+        hasReceipt:false
+      };
+    }
+  }
+
+  config.totalNumbers = nuevoTotal;
+  config.price = Number(document.getElementById('cfgPrice').value) || config.price;
+  config.goal = Number(document.getElementById('cfgGoal').value) || config.goal;
+  config.alias = document.getElementById('cfgAlias').value.trim() || config.alias;
   config.instagram = document.getElementById('cfgInstagram').value.trim();
   config.showAportes = document.getElementById('cfgShowAportes').checked;
   config.showTransparencia = document.getElementById('cfgShowTransparencia').checked;
   config.raffleEnabled = document.getElementById('cfgRaffleEnabled').checked;
   config.raffleDate = document.getElementById('cfgRaffleDate').value || '';
+
+  await persistNumbers();
   await persistConfig();
-  logHistory('Configuración actualizada (precio / meta / alias / secciones / sorteo)');
+  logHistory(`Configuración actualizada. Total de números: ${nuevoTotal}`);
   renderAll();
-  showToast('Configuración guardada');
+  showToast('La rifa ahora tiene ' + nuevoTotal + ' números.');
 }
 
 async function saveQuienesSomos(){
