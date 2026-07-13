@@ -476,6 +476,18 @@ tr:last-child td{border-bottom:none;}
   </div>
 </div>
 
+<!-- FACTURA / COMPROBANTE DE RESERVA (para el comprador) -->
+<div class="receipt-overlay" id="facturaOverlay" style="display:none;">
+  <div class="receipt-box" style="text-align:center;">
+    <div class="modal-close" onclick="closeFactura()">✕</div>
+    <img id="facturaImg" src="" alt="Comprobante de reserva" style="border-radius:14px;">
+    <div style="margin-top:16px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">
+      <a id="facturaDownloadBtn" download="comprobante-reserva.png" href="#" style="background:var(--amarillo);color:#15171C;padding:12px 22px;border-radius:30px;font-weight:700;font-size:14px;">⬇ Descargar comprobante</a>
+      <button onclick="closeFactura()" style="background:rgba(255,255,255,0.15);color:#fff;padding:12px 22px;border-radius:30px;font-weight:700;font-size:14px;">Cerrar</button>
+    </div>
+  </div>
+</div>
+
 <!-- ANUNCIO POP-UP -->
 <div class="overlay" id="announceOverlay" style="display:none;" onclick="if(event.target===this) closeAnnouncement()">
   <div class="modal announce-box">
@@ -1181,7 +1193,8 @@ async function submitPurchase(){
   const email = document.getElementById('fEmail').value.trim();
   const dateStr = new Date().toLocaleDateString('es-AR');
   const reservedAt = Date.now();
-  const seats = [...selectedSeats];
+  const seats = [...selectedSeats].sort((a,b)=>a-b);
+  const amountTotal = config.price * seats.length;
   seats.forEach(seat=>{
     numbers[seat] = {
       status:'pending',
@@ -1197,9 +1210,7 @@ async function submitPurchase(){
   selectedSeats = [];
   renderAll();
   closeModal();
-  showToast(seats.length>1
-    ? `¡${seats.length} números reservados! Te contactaremos por WhatsApp para confirmar el pago.`
-    : '¡Número reservado! Te contactaremos por WhatsApp para confirmar el pago.');
+  await mostrarFacturaReserva({ name, seats, amount: amountTotal, dateStr, reservedAt });
 }
 
 function showToast(msg){
@@ -1209,6 +1220,167 @@ function showToast(msg){
   t.textContent = msg;
   host.appendChild(t);
   setTimeout(()=>t.remove(), 3200);
+}
+
+/* ======================= FACTURA / COMPROBANTE DE RESERVA ======================= */
+function roundedRectPath(ctx,x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);
+  ctx.arcTo(x,y,x+w,y,r);
+  ctx.closePath();
+}
+
+function wrapCanvasText(ctx, text, x, y, maxWidth, lineHeight){
+  const words = String(text).split(' ');
+  let line = '';
+  const lines = [];
+  for(let n=0;n<words.length;n++){
+    const testLine = line + words[n] + ' ';
+    if(ctx.measureText(testLine).width > maxWidth && n > 0){
+      lines.push(line.trim());
+      line = words[n] + ' ';
+    } else {
+      line = testLine;
+    }
+  }
+  lines.push(line.trim());
+  lines.forEach((l,i)=> ctx.fillText(l, x, y + i*lineHeight));
+  return lines.length;
+}
+
+async function buildFacturaImage({name, seats, amount, dateStr, reservedAt}){
+  try{ if(document.fonts && document.fonts.ready) await document.fonts.ready; }catch(e){}
+
+  const width = 680;
+  const seatsLabel = seats.length>1 ? seats.join('  ·  ') : String(seats[0]);
+
+  // medimos cuántas líneas van a ocupar los números para calcular el alto del canvas
+  const measure = document.createElement('canvas').getContext('2d');
+  measure.font = '700 19px Poppins, Arial, sans-serif';
+  const maxTextWidth = width - 120;
+  const words = seatsLabel.split(' ');
+  let lineCount = 1, line = '';
+  words.forEach((w,i)=>{
+    const test = line + w + ' ';
+    if(measure.measureText(test).width > maxTextWidth && i>0){ lineCount++; line = w+' '; }
+    else line = test;
+  });
+
+  const code = 'MPV-' + reservedAt.toString(36).toUpperCase();
+  const height = 420 + (lineCount-1)*26;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width; canvas.height = height;
+  const ctx = canvas.getContext('2d');
+
+  // fondo
+  ctx.fillStyle = '#FAF8F4';
+  roundedRectPath(ctx,0,0,width,height,26); ctx.fill();
+
+  // franja tricolor arriba
+  const barH = 8;
+  ctx.fillStyle = '#FFCE00'; ctx.fillRect(0,0,width/3,barH);
+  ctx.fillStyle = '#0033A0'; ctx.fillRect(width/3,0,width/3,barH);
+  ctx.fillStyle = '#E4032E'; ctx.fillRect((width/3)*2,0,width/3,barH);
+
+  let y = 58;
+  ctx.fillStyle = '#15171C';
+  ctx.textAlign = 'left';
+  ctx.font = '700 24px Fraunces, Georgia, serif';
+  ctx.fillText('Manos por Venezuela', 40, y);
+
+  y += 30;
+  ctx.font = '700 12.5px Poppins, Arial, sans-serif';
+  ctx.fillStyle = '#E4032E';
+  ctx.fillText('COMPROBANTE DE RESERVA', 40, y);
+
+  // caja
+  const boxTop = y + 26;
+  const boxHeight = height - boxTop - 70;
+  ctx.strokeStyle = '#E7E3DA';
+  ctx.lineWidth = 1;
+  roundedRectPath(ctx, 40, boxTop, width-80, boxHeight, 18);
+  ctx.stroke();
+
+  let iy = boxTop + 36;
+  ctx.font = '700 11.5px Poppins, Arial, sans-serif';
+  ctx.fillStyle = '#9AA0AC';
+  ctx.fillText('A NOMBRE DE', 62, iy);
+  iy += 24;
+  ctx.font = '700 19px Poppins, Arial, sans-serif';
+  ctx.fillStyle = '#15171C';
+  ctx.fillText(name, 62, iy);
+
+  iy += 38;
+  ctx.font = '700 11.5px Poppins, Arial, sans-serif';
+  ctx.fillStyle = '#9AA0AC';
+  ctx.fillText(seats.length>1 ? 'NÚMEROS RESERVADOS' : 'NÚMERO RESERVADO', 62, iy);
+  iy += 26;
+  ctx.font = '700 19px Poppins, Arial, sans-serif';
+  ctx.fillStyle = '#0033A0';
+  const linesUsed = wrapCanvasText(ctx, seatsLabel, 62, iy, maxTextWidth, 26);
+  iy += (linesUsed-1)*26 + 40;
+
+  ctx.font = '700 11.5px Poppins, Arial, sans-serif';
+  ctx.fillStyle = '#9AA0AC';
+  ctx.fillText('MONTO TOTAL', 62, iy);
+  iy += 28;
+  ctx.font = '700 22px Fraunces, Georgia, serif';
+  ctx.fillStyle = '#E4032E';
+  ctx.fillText(fmt(amount), 62, iy);
+
+  // columna derecha: fecha + codigo
+  ctx.textAlign = 'right';
+  ctx.font = '700 11.5px Poppins, Arial, sans-serif';
+  ctx.fillStyle = '#9AA0AC';
+  ctx.fillText('FECHA', width-62, boxTop+36);
+  ctx.font = '700 14px Poppins, Arial, sans-serif';
+  ctx.fillStyle = '#15171C';
+  ctx.fillText(dateStr, width-62, boxTop+58);
+
+  ctx.font = '700 11.5px Poppins, Arial, sans-serif';
+  ctx.fillStyle = '#9AA0AC';
+  ctx.fillText('CÓDIGO', width-62, boxTop+96);
+  ctx.font = '700 14px Poppins, Arial, sans-serif';
+  ctx.fillStyle = '#15171C';
+  ctx.fillText(code, width-62, boxTop+118);
+  ctx.textAlign = 'left';
+
+  // badge de estado
+  const badgeY = height - 46;
+  ctx.fillStyle = '#FFF7DC';
+  roundedRectPath(ctx, 40, badgeY, width-80, 34, 10); ctx.fill();
+  ctx.fillStyle = '#8a6b00';
+  ctx.font = '700 12.5px Poppins, Arial, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('⏳ RESERVADO · PENDIENTE DE CONFIRMACIÓN DE PAGO', width/2, badgeY+22);
+  ctx.textAlign = 'left';
+
+  return canvas.toDataURL('image/png');
+}
+
+async function mostrarFacturaReserva(data){
+  let dataUrl;
+  try{
+    dataUrl = await buildFacturaImage(data);
+  }catch(e){
+    showToast(data.seats.length>1
+      ? `¡${data.seats.length} números reservados! Te contactaremos por WhatsApp para confirmar el pago.`
+      : '¡Número reservado! Te contactaremos por WhatsApp para confirmar el pago.');
+    return;
+  }
+  const img = document.getElementById('facturaImg');
+  const dlBtn = document.getElementById('facturaDownloadBtn');
+  img.src = dataUrl;
+  dlBtn.href = dataUrl;
+  dlBtn.setAttribute('download', 'reserva-manos-por-venezuela-'+data.seats.join('-')+'.png');
+  document.getElementById('facturaOverlay').style.display='flex';
+}
+function closeFactura(){
+  document.getElementById('facturaOverlay').style.display='none';
 }
 
 /* Se quitó la liberación automática de números "pendientes" a las 24hs.
