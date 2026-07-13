@@ -812,7 +812,7 @@ async function loadAll(){
 function seedNumbers(){
   numbers = {};
   for(let i=1;i<=config.totalNumbers;i++){
-    numbers[i] = {status:"avail", name:"", whats:"", insta:"", email:"", amount:0, date:""};
+    numbers[i] = {status:"avail", name:"", whats:"", insta:"", email:"", amount:0, date:"", hasReceipt:false};
   }
 }
 
@@ -1153,14 +1153,14 @@ function onFileChosen(input){
     reader.onload = function(e){
       const img = new Image();
       img.onload = function(){
-        const maxW = 900;
+        const maxW = 800;
         const scale = Math.min(1, maxW/img.width);
         const canvas = document.createElement('canvas');
         canvas.width = Math.round(img.width*scale);
         canvas.height = Math.round(img.height*scale);
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        uploadedFileData = canvas.toDataURL('image/jpeg', 0.7);
+        uploadedFileData = canvas.toDataURL('image/jpeg', 0.62);
         uploadedFile = true;
         document.getElementById('uploadBox').textContent='✓ '+file.name;
         document.getElementById('uploadBox').classList.add('has-file');
@@ -1198,22 +1198,46 @@ async function submitPurchase(){
   const reservedAt = Date.now();
   const seats = [...selectedSeats].sort((a,b)=>a-b);
   const amountTotal = config.price * seats.length;
-  seats.forEach(seat=>{
-    numbers[seat] = {
-      status:'pending',
-      name, whats, insta, email,
-      amount: config.price,
-      date: dateStr,
-      reservedAt,
-      receipt
-    };
-  });
-  await persistNumbers();
-  logHistory(`Número(s) ${seats.join(', ')} reservado(s) por ${name}`);
-  selectedSeats = [];
-  renderAll();
-  closeModal();
-  await mostrarFacturaReserva({ name, seats, amount: amountTotal, dateStr, reservedAt });
+
+  const submitBtn = document.getElementById('submitBtn');
+  submitBtn.disabled = true;
+  submitBtn.textContent = 'Enviando reserva...';
+
+  try{
+    /* IMPORTANTE: el comprobante (imagen) se guarda en un documento propio por
+       número (mpv:receipt:<numero>), separado del documento "mpv:numbers" que
+       tiene el estado de los 500 números. Antes el comprobante se guardaba
+       DENTRO de "mpv:numbers", así que cada reserva nueva tenía que volver a
+       subir TODOS los comprobantes de todas las reservas anteriores otra vez
+       (el documento crecía sin parar). Eso era lo que hacía que en el celular,
+       con internet más lento, la reserva tardara varios minutos. Ahora cada
+       compra solo sube su propio comprobante, así que el tiempo de espera es
+       siempre el mismo sin importar cuántas reservas haya habido antes.
+    */
+    seats.forEach(seat=>{
+      numbers[seat] = {
+        status:'pending',
+        name, whats, insta, email,
+        amount: config.price,
+        date: dateStr,
+        reservedAt,
+        hasReceipt: true
+      };
+    });
+    await persistNumbers();
+    await Promise.all(seats.map(seat => window.storage.set('mpv:receipt:'+seat, receipt, true)));
+
+    logHistory(`Número(s) ${seats.join(', ')} reservado(s) por ${name}`);
+    selectedSeats = [];
+    renderAll();
+    closeModal();
+    await mostrarFacturaReserva({ name, seats, amount: amountTotal, dateStr, reservedAt });
+  }catch(e){
+    showToast('Hubo un problema al enviar la reserva. Revisa tu conexión e intenta de nuevo.');
+  }finally{
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Reservar';
+  }
 }
 
 function showToast(msg){
@@ -1457,8 +1481,8 @@ function renderAdminTable(){
                   v.status==='pending'?'<span class="badge pending">Reservado</span>':
                   v.status==='paid'?'<span class="badge paid">Pagado</span>':'<span class="badge blocked">Bloqueado</span>';
     const pago = v.status==='paid'?'Confirmado':v.status==='pending'?'Pendiente':'-';
-    const receiptCell = v.receipt
-      ? `<div class="receipt-thumb" onclick="viewReceipt(${k})"><img src="${v.receipt}" alt="Comprobante ${k}"></div>`
+    const receiptCell = (v.hasReceipt || v.receipt)
+      ? `<button onclick="viewReceipt(${k})" style="background:#EAF1FF;color:var(--azul);border-radius:6px;padding:5px 10px;font-size:11px;font-weight:700;white-space:nowrap;">👁 Ver</button>`
       : `<span class="no-receipt">Sin comprobante</span>`;
     return `<tr>
       <td><b>${k}</b></td>
@@ -1478,11 +1502,28 @@ function renderAdminTable(){
   }).join('');
 }
 
-function viewReceipt(n){
+async function viewReceipt(n){
   const v = numbers[n];
-  if(!v || !v.receipt) return;
-  document.getElementById('receiptImg').src = v.receipt;
+  if(!v || !(v.hasReceipt || v.receipt)) return;
+  const imgEl = document.getElementById('receiptImg');
   document.getElementById('receiptOverlay').style.display='flex';
+
+  // Formato viejo: el comprobante venía embebido dentro del propio número.
+  if(v.receipt){
+    imgEl.src = v.receipt;
+    return;
+  }
+
+  // Formato nuevo: el comprobante se guarda por separado y se carga solo al pedirlo.
+  imgEl.src = '';
+  imgEl.alt = 'Cargando comprobante...';
+  try{
+    const res = await window.storage.get('mpv:receipt:'+n, true);
+    imgEl.src = res.value;
+  }catch(e){
+    showToast('No se pudo cargar el comprobante.');
+    closeReceipt();
+  }
 }
 function closeReceipt(){
   document.getElementById('receiptOverlay').style.display='none';
@@ -1498,8 +1539,9 @@ async function confirmPayment(n){
   showToast('Pago confirmado, número '+n);
 }
 async function releaseNumber(n){
-  numbers[n] = {status:'avail', name:'', whats:'', insta:'', email:'', amount:0, date:'', receipt:''};
+  numbers[n] = {status:'avail', name:'', whats:'', insta:'', email:'', amount:0, date:'', hasReceipt:false};
   await persistNumbers();
+  window.storage.delete('mpv:receipt:'+n, true).catch(()=>{});
   logHistory(`Número ${n} liberado manualmente`);
   renderAll();
 }
@@ -1522,7 +1564,7 @@ async function addNumbersPrompt(){
   if(!n || n<=0) return;
   const start = config.totalNumbers+1;
   for(let i=start;i<start+n;i++){
-    numbers[i] = {status:'avail', name:'', whats:'', insta:'', email:'', amount:0, date:'', receipt:''};
+    numbers[i] = {status:'avail', name:'', whats:'', insta:'', email:'', amount:0, date:'', hasReceipt:false};
   }
   config.totalNumbers += n;
   await persistNumbers(); await persistConfig();
