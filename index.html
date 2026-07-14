@@ -802,22 +802,37 @@ async function loadAll(){
   prizes = prizesResult ? JSON.parse(prizesResult.value) : [];
   sponsors = sponsorsResult ? JSON.parse(sponsorsResult.value) : [];
 
+  // Compatibilidad con datos "viejos": si un premio/sponsor no tiene id
+  // (formato de antes de separar las imágenes) le asignamos uno ahora.
+  prizes.forEach((p,i)=>{ if(!p.id) p.id = 'p'+Date.now().toString(36)+i+Math.random().toString(36).slice(2,5); });
+  sponsors.forEach((s,i)=>{ if(!s.id) s.id = 's'+Date.now().toString(36)+i+Math.random().toString(36).slice(2,5); });
+
   // Las imágenes de premios y logos de sponsors NO viven en estos documentos
   // (mpv:prizes / mpv:sponsors solo guardan texto + un id). Cada imagen se
   // guarda en su propio documento chiquito para no chocar con el límite de
   // 1MB por documento de Firestore. Acá las traemos todas en paralelo y las
   // "pegamos" en memoria sobre cada premio/sponsor para poder mostrarlas.
+  //
+  // Caso especial (datos viejos, de antes de este esquema): si el premio/sponsor
+  // ya tiene una imagen embebida directamente en el documento (porque todavía no
+  // se había separado), la dejamos como está pero marcamos _imgSynced=false para
+  // que persistPrizes()/persistSponsors() la suba a su documento propio la
+  // próxima vez que se guarde algo — así nunca se "pierde" una imagen vieja.
   await Promise.all([
     Promise.all(prizes.map(async p=>{
       if(p.hasImg){
-        try{ const r = await window.storage.get('mpv:prizeimg:'+p.id, true); p.img = r.value; }
-        catch(e){ p.img = ''; }
+        try{ const r = await window.storage.get('mpv:prizeimg:'+p.id, true); p.img = r.value; p._imgSynced = true; }
+        catch(e){ p.img = ''; p._imgSynced = false; }
+      } else if(p.img){
+        p._imgSynced = false;
       }
     })),
     Promise.all(sponsors.map(async s=>{
       if(s.hasLogo){
-        try{ const r = await window.storage.get('mpv:sponsorlogo:'+s.id, true); s.logo = r.value; }
-        catch(e){ s.logo = ''; }
+        try{ const r = await window.storage.get('mpv:sponsorlogo:'+s.id, true); s.logo = r.value; s._imgSynced = true; }
+        catch(e){ s.logo = ''; s._imgSynced = false; }
+      } else if(s.logo){
+        s._imgSynced = false;
       }
     }))
   ]);
@@ -848,10 +863,31 @@ async function persistUpdates(){ await window.storage.set(STORAGE_KEY_UPDATES, J
    del límite de 1MB por documento de Firestore y el guardado fallaba sin
    avisar — por eso solo se veían los primeros que alcanzaban a entrar). */
 async function persistPrizes(){
+  // Antes de guardar la lista de premios, nos aseguramos de que la foto de
+  // CADA premio ya esté subida a su propio documento (mpv:prizeimg:<id>).
+  // Esto cubre tanto al premio que se acaba de agregar/editar como a
+  // cualquier premio viejo cuya foto todavía no se había migrado a este
+  // esquema — así nunca se pierde una foto por guardar solo la del que se
+  // está tocando en el momento. Si ya estaba sincronizada, no se vuelve a
+  // subir (evita subidas repetidas innecesarias).
+  await Promise.all(prizes.map(async p=>{
+    if(p.img && !p._imgSynced){
+      await window.storage.set('mpv:prizeimg:'+p.id, p.img, true);
+      p._imgSynced = true;
+    }
+  }));
   const meta = prizes.map(p=>({ id:p.id, name:p.name, social:p.social, description:p.description, hasImg: !!p.img }));
   await window.storage.set(STORAGE_KEY_PRIZES, JSON.stringify(meta), true);
 }
 async function persistSponsors(){
+  // Mismo criterio que persistPrizes(), pero para los logos de los
+  // emprendimientos de la comunidad.
+  await Promise.all(sponsors.map(async s=>{
+    if(s.logo && !s._imgSynced){
+      await window.storage.set('mpv:sponsorlogo:'+s.id, s.logo, true);
+      s._imgSynced = true;
+    }
+  }));
   const meta = sponsors.map(s=>({ id:s.id, name:s.name, hasLogo: !!s.logo }));
   await window.storage.set(STORAGE_KEY_SPONSORS, JSON.stringify(meta), true);
 }
@@ -1898,22 +1934,15 @@ async function addPrize(){
   try{
     if(editingPrizeIndex > -1){
       const existing = prizes[editingPrizeIndex];
-      const id = existing.id;
-      prizes[editingPrizeIndex] = { id, name, social, description, img };
-      // solo re-sube la imagen a Firestore si cambió (si no, ya está guardada con ese id)
-      if(img && img !== existing.img){
-        await window.storage.set('mpv:prizeimg:'+id, img, true);
-      }
+      const changed = !!img && img !== existing.img;
+      prizes[editingPrizeIndex] = { id: existing.id, name, social, description, img, _imgSynced: changed ? false : existing._imgSynced };
       logHistory('Emprendimiento editado en la sección de premios: '+name);
     } else {
       const id = 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
-      prizes.push({ id, name, social, description, img });
-      if(img){
-        await window.storage.set('mpv:prizeimg:'+id, img, true);
-      }
+      prizes.push({ id, name, social, description, img, _imgSynced:false });
       logHistory('Nuevo emprendimiento agregado a la sección de premios: '+name);
     }
-    await persistPrizes();
+    await persistPrizes(); // persistPrizes() sube la foto pendiente automáticamente
     cancelPrizeEdit();
     renderAdminPrizes();
     renderPrizes();
@@ -2002,21 +2031,15 @@ async function addSponsor(){
   try{
     if(editingSponsorIndex > -1){
       const existing = sponsors[editingSponsorIndex];
-      const id = existing.id;
-      sponsors[editingSponsorIndex] = { id, name, logo };
-      if(logo && logo !== existing.logo){
-        await window.storage.set('mpv:sponsorlogo:'+id, logo, true);
-      }
+      const changed = !!logo && logo !== existing.logo;
+      sponsors[editingSponsorIndex] = { id: existing.id, name, logo, _imgSynced: changed ? false : existing._imgSynced };
       logHistory('Logo de emprendimiento editado: '+name);
     } else {
       const id = 's' + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
-      sponsors.push({ id, name, logo });
-      if(logo){
-        await window.storage.set('mpv:sponsorlogo:'+id, logo, true);
-      }
+      sponsors.push({ id, name, logo, _imgSynced:false });
       logHistory('Nuevo emprendimiento sumado a la comunidad: '+name);
     }
-    await persistSponsors();
+    await persistSponsors(); // persistSponsors() sube el logo pendiente automáticamente
     cancelSponsorEdit();
     renderAdminSponsors();
     renderSponsorsMarquee();
