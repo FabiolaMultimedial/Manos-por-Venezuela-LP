@@ -760,10 +760,10 @@ let config = {
 let updates = []; // [{date, text}]
 let numbers = {}; // { "1": {status, name, whats, insta, email, amount, date} }
 let history = [];
-let prizes = []; // [{img, name, social, description}]
+let prizes = []; // [{id, img, name, social, description}]  (img se guarda aparte en Firestore, ver mpv:prizeimg:<id>)
 let prizeIndex = 0;
 let editingPrizeIndex = -1;
-let sponsors = []; // [{name, logo}]
+let sponsors = []; // [{id, name, logo}] (logo se guarda aparte en Firestore, ver mpv:sponsorlogo:<id>)
 let editingSponsorIndex = -1;
 let selectedSeats = [];
 let uploadedFile = false;
@@ -802,6 +802,26 @@ async function loadAll(){
   prizes = prizesResult ? JSON.parse(prizesResult.value) : [];
   sponsors = sponsorsResult ? JSON.parse(sponsorsResult.value) : [];
 
+  // Las imágenes de premios y logos de sponsors NO viven en estos documentos
+  // (mpv:prizes / mpv:sponsors solo guardan texto + un id). Cada imagen se
+  // guarda en su propio documento chiquito para no chocar con el límite de
+  // 1MB por documento de Firestore. Acá las traemos todas en paralelo y las
+  // "pegamos" en memoria sobre cada premio/sponsor para poder mostrarlas.
+  await Promise.all([
+    Promise.all(prizes.map(async p=>{
+      if(p.hasImg){
+        try{ const r = await window.storage.get('mpv:prizeimg:'+p.id, true); p.img = r.value; }
+        catch(e){ p.img = ''; }
+      }
+    })),
+    Promise.all(sponsors.map(async s=>{
+      if(s.hasLogo){
+        try{ const r = await window.storage.get('mpv:sponsorlogo:'+s.id, true); s.logo = r.value; }
+        catch(e){ s.logo = ''; }
+      }
+    }))
+  ]);
+
   renderAll();
   startCountdown();
   startQuienesCarousel();
@@ -820,8 +840,21 @@ async function persistNumbers(){ await window.storage.set(STORAGE_KEY_NUMBERS, J
 async function persistConfig(){ await window.storage.set(STORAGE_KEY_CONFIG, JSON.stringify(config), true); }
 async function persistHistory(){ await window.storage.set(STORAGE_KEY_HISTORY, JSON.stringify(history), true); }
 async function persistUpdates(){ await window.storage.set(STORAGE_KEY_UPDATES, JSON.stringify(updates), true); }
-async function persistPrizes(){ await window.storage.set(STORAGE_KEY_PRIZES, JSON.stringify(prizes), true); }
-async function persistSponsors(){ await window.storage.set(STORAGE_KEY_SPONSORS, JSON.stringify(sponsors), true); }
+
+/* IMPORTANTE: mpv:prizes y mpv:sponsors NUNCA deben incluir el campo de imagen.
+   Solo guardamos {id, name, social, description, hasImg} y {id, name, hasLogo}.
+   Así el documento se mantiene chiquito sin importar cuántos premios/sponsors
+   haya (antes, con ~50 fotos en base64 dentro de un solo documento, se pasaba
+   del límite de 1MB por documento de Firestore y el guardado fallaba sin
+   avisar — por eso solo se veían los primeros que alcanzaban a entrar). */
+async function persistPrizes(){
+  const meta = prizes.map(p=>({ id:p.id, name:p.name, social:p.social, description:p.description, hasImg: !!p.img }));
+  await window.storage.set(STORAGE_KEY_PRIZES, JSON.stringify(meta), true);
+}
+async function persistSponsors(){
+  const meta = sponsors.map(s=>({ id:s.id, name:s.name, hasLogo: !!s.logo }));
+  await window.storage.set(STORAGE_KEY_SPONSORS, JSON.stringify(meta), true);
+}
 
 function logHistory(action){
   history.unshift({action, date: new Date().toLocaleString('es-AR')});
@@ -1860,26 +1893,43 @@ async function addPrize(){
   const social = document.getElementById('newPrizeSocial').value.trim();
   const description = document.getElementById('newPrizeDesc').value.trim();
   if(!name){ showToast('Ingresa el nombre del emprendimiento.'); return; }
-  const data = { name, social, description, img: window._pendingPrizeImg || '' };
-  if(editingPrizeIndex > -1){
-    prizes[editingPrizeIndex] = data;
-    logHistory('Emprendimiento editado en la sección de premios: '+name);
-  } else {
-    prizes.push(data);
-    logHistory('Nuevo emprendimiento agregado a la sección de premios: '+name);
+  const img = window._pendingPrizeImg || '';
+
+  try{
+    if(editingPrizeIndex > -1){
+      const existing = prizes[editingPrizeIndex];
+      const id = existing.id;
+      prizes[editingPrizeIndex] = { id, name, social, description, img };
+      // solo re-sube la imagen a Firestore si cambió (si no, ya está guardada con ese id)
+      if(img && img !== existing.img){
+        await window.storage.set('mpv:prizeimg:'+id, img, true);
+      }
+      logHistory('Emprendimiento editado en la sección de premios: '+name);
+    } else {
+      const id = 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
+      prizes.push({ id, name, social, description, img });
+      if(img){
+        await window.storage.set('mpv:prizeimg:'+id, img, true);
+      }
+      logHistory('Nuevo emprendimiento agregado a la sección de premios: '+name);
+    }
+    await persistPrizes();
+    cancelPrizeEdit();
+    renderAdminPrizes();
+    renderPrizes();
+    renderSectionVisibility();
+    showToast('Emprendimiento guardado');
+  }catch(e){
+    showToast('No se pudo guardar el premio. Revisa tu conexión e intenta de nuevo.');
   }
-  await persistPrizes();
-  cancelPrizeEdit();
-  renderAdminPrizes();
-  renderPrizes();
-  renderSectionVisibility();
-  showToast('Emprendimiento guardado');
 }
 
 async function deletePrize(i){
+  const p = prizes[i];
   prizes.splice(i,1);
   if(editingPrizeIndex === i) cancelPrizeEdit();
   await persistPrizes();
+  if(p && p.id) window.storage.delete('mpv:prizeimg:'+p.id, true).catch(()=>{});
   logHistory('Emprendimiento eliminado de la sección de premios');
   renderAdminPrizes();
   renderPrizes();
@@ -1947,26 +1997,42 @@ function cancelSponsorEdit(){
 async function addSponsor(){
   const name = document.getElementById('newSponsorName').value.trim();
   if(!name){ showToast('Ingresa el nombre del emprendimiento.'); return; }
-  const data = { name, logo: window._pendingSponsorLogo || '' };
-  if(editingSponsorIndex > -1){
-    sponsors[editingSponsorIndex] = data;
-    logHistory('Logo de emprendimiento editado: '+name);
-  } else {
-    sponsors.push(data);
-    logHistory('Nuevo emprendimiento sumado a la comunidad: '+name);
+  const logo = window._pendingSponsorLogo || '';
+
+  try{
+    if(editingSponsorIndex > -1){
+      const existing = sponsors[editingSponsorIndex];
+      const id = existing.id;
+      sponsors[editingSponsorIndex] = { id, name, logo };
+      if(logo && logo !== existing.logo){
+        await window.storage.set('mpv:sponsorlogo:'+id, logo, true);
+      }
+      logHistory('Logo de emprendimiento editado: '+name);
+    } else {
+      const id = 's' + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
+      sponsors.push({ id, name, logo });
+      if(logo){
+        await window.storage.set('mpv:sponsorlogo:'+id, logo, true);
+      }
+      logHistory('Nuevo emprendimiento sumado a la comunidad: '+name);
+    }
+    await persistSponsors();
+    cancelSponsorEdit();
+    renderAdminSponsors();
+    renderSponsorsMarquee();
+    renderSectionVisibility();
+    showToast('Emprendimiento guardado');
+  }catch(e){
+    showToast('No se pudo guardar el emprendimiento. Revisa tu conexión e intenta de nuevo.');
   }
-  await persistSponsors();
-  cancelSponsorEdit();
-  renderAdminSponsors();
-  renderSponsorsMarquee();
-  renderSectionVisibility();
-  showToast('Emprendimiento guardado');
 }
 
 async function deleteSponsor(i){
+  const s = sponsors[i];
   sponsors.splice(i,1);
   if(editingSponsorIndex === i) cancelSponsorEdit();
   await persistSponsors();
+  if(s && s.id) window.storage.delete('mpv:sponsorlogo:'+s.id, true).catch(()=>{});
   logHistory('Emprendimiento eliminado de la comunidad');
   renderAdminSponsors();
   renderSponsorsMarquee();
