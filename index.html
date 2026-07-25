@@ -560,6 +560,7 @@ tr:last-child td{border-bottom:none;}
         <div class="tab" data-tab="anuncio" onclick="switchTab('anuncio')">Anuncio</div>
         <div class="tab" data-tab="config" onclick="switchTab('config')">Configuración</div>
         <div class="tab" data-tab="historial" onclick="switchTab('historial')">Historial</div>
+        <div class="tab" data-tab="recuperacion" onclick="switchTab('recuperacion')" style="background:#FCE7EA;color:#9f1239;">Recuperación</div>
       </div>
 
       <div class="stat-cards">
@@ -717,6 +718,20 @@ tr:last-child td{border-bottom:none;}
       <div id="tabHistorial" style="display:none;">
         <div style="background:#fff;border:1px solid var(--line);border-radius:12px;padding:6px 18px;max-height:500px;overflow-y:auto;" id="historyList"></div>
       </div>
+
+      <div id="tabRecuperacion" style="display:none;">
+        <div style="background:#fff1f2;border:1px solid #fecdd3;border-radius:14px;padding:18px;margin-bottom:18px;">
+          <h3 style="font-size:19px;color:#9f1239;margin-bottom:8px;">Recuperación de emergencia</h3>
+          <p style="font-size:13.5px;line-height:1.6;color:#4c0519;">Primero descarga el respaldo actual. Después analiza el historial y los comprobantes. La reconstrucción puede recuperar números, nombres y estado; WhatsApp, email e Instagram solo se recuperan si todavía existen en algún respaldo del documento original.</p>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px;">
+          <button onclick="downloadEmergencyBackup()" style="background:var(--azul);color:#fff;padding:11px 16px;border-radius:9px;font-weight:700;">1. Descargar respaldo completo</button>
+          <button onclick="analyzeRecovery()" style="background:#d97706;color:#fff;padding:11px 16px;border-radius:9px;font-weight:700;">2. Analizar recuperación</button>
+          <button onclick="downloadRecoveryCSV()" style="background:#475569;color:#fff;padding:11px 16px;border-radius:9px;font-weight:700;">Descargar CSV recuperado</button>
+          <button onclick="restoreRecoveryCandidate()" style="background:var(--rojo);color:#fff;padding:11px 16px;border-radius:9px;font-weight:700;">3. Restaurar números</button>
+        </div>
+        <div id="recoveryReport" style="background:#fff;border:1px solid var(--line);border-radius:12px;padding:18px;font-size:13px;line-height:1.6;">Todavía no se ejecutó el análisis.</div>
+      </div>
     </div>
   </div>
 </div>
@@ -774,10 +789,32 @@ function reservationError(code, seats, message){
   return error;
 }
 
+function hasMeaningfulNumbersData(current){
+  return Object.values(current || {}).some(seat => seat && (
+    seat.status !== 'avail' || seat.name || seat.whats || seat.insta || seat.email || seat.hasReceipt
+  ));
+}
+
+function queueNumbersBackup(transaction, snap, reason){
+  if(!snap.exists()) return;
+  const current = parseNumbersDocument(snap);
+  if(!hasMeaningfulNumbersData(current)) return;
+  const backupKey = 'mpv:numbers_backup:' + Date.now() + '-' + Math.random().toString(36).slice(2,7);
+  transaction.set(doc(db, COLLECTION, backupKey), {
+    value:snap.data().value || '{}',
+    reason,
+    createdAt:new Date().toISOString()
+  });
+}
+
 window.storage = {
   async get(key){
     const snap = await getDoc(doc(db, COLLECTION, key));
-    if(!snap.exists()) throw new Error("not found: "+key);
+    if(!snap.exists()){
+      const error = new Error("not found: "+key);
+      error.code = "not-found";
+      throw error;
+    }
     return { key, value: snap.data().value, shared: true };
   },
   async set(key, value){
@@ -793,6 +830,24 @@ window.storage = {
     const keys = [];
     snaps.forEach(d => { if(!prefix || d.id.startsWith(prefix)) keys.push(d.id); });
     return { keys, prefix, shared: true };
+  },
+  async exportAll(){
+    const snaps = await getDocs(collection(db, COLLECTION));
+    const documents = [];
+    snaps.forEach(d => documents.push({ id:d.id, data:d.data() }));
+    return { exportedAt:new Date().toISOString(), projectId:firebaseConfig.projectId, collection:COLLECTION, documents };
+  },
+  async backupNumbers(reason){
+    const sourceRef = doc(db, COLLECTION, NUMBERS_DOCUMENT_KEY);
+    const snap = await getDoc(sourceRef);
+    if(!snap.exists()) return null;
+    const backupKey = 'mpv:numbers_backup:' + Date.now() + '-' + Math.random().toString(36).slice(2,7);
+    await setDoc(doc(db, COLLECTION, backupKey), {
+      value:snap.data().value || '{}',
+      reason:reason || 'manual',
+      createdAt:new Date().toISOString()
+    });
+    return backupKey;
   },
 
   /* Reserva atómica: Firestore vuelve a ejecutar la transacción si otro
@@ -826,6 +881,7 @@ window.storage = {
         };
       });
 
+      queueNumbersBackup(transaction, snap, 'antes-reserva-temporal');
       transaction.set(ref, { value: JSON.stringify(current) });
       return { numbers:current, holdUntil };
     });
@@ -862,6 +918,7 @@ window.storage = {
         };
       });
 
+      queueNumbersBackup(transaction, snap, 'antes-confirmar-reserva');
       transaction.set(ref, { value: JSON.stringify(current) });
       return { numbers:current };
     });
@@ -886,7 +943,10 @@ window.storage = {
         }
       });
 
-      if(changed) transaction.set(ref, { value: JSON.stringify(current) });
+      if(changed){
+        queueNumbersBackup(transaction, snap, 'antes-liberar-reserva-temporal');
+        transaction.set(ref, { value: JSON.stringify(current) });
+      }
       return { numbers:current };
     });
   },
@@ -899,6 +959,7 @@ window.storage = {
       const current = parseNumbersDocument(snap);
       const key = String(seatNumber);
       current[key] = merge ? {...(current[key] || emptySeat()), ...value} : value;
+      queueNumbersBackup(transaction, snap, 'antes-cambio-administrativo');
       transaction.set(ref, { value: JSON.stringify(current) });
       return { numbers:current };
     });
@@ -948,6 +1009,9 @@ let heldSeats = [];
 let holdUntil = 0;
 let holdCountdownTimer = null;
 let unsubscribeNumbers = null;
+let dataWriteLock = false;
+let recoveryReceiptKeys = [];
+let recoveryCandidate = null;
 
 const STORAGE_KEY_CONFIG = "mpv:config";
 const STORAGE_KEY_NUMBERS = "mpv:numbers";
@@ -956,64 +1020,109 @@ const STORAGE_KEY_UPDATES = "mpv:updates";
 const STORAGE_KEY_PRIZES = "mpv:prizes";
 const STORAGE_KEY_SPONSORS = "mpv:sponsors";
 
+async function safeStorageRead(key){
+  try{
+    return {status:'ok', result:await window.storage.get(key, true)};
+  }catch(error){
+    if(error && error.code === 'not-found') return {status:'missing', error};
+    return {status:'error', error};
+  }
+}
+
+function parseStoredJson(readResult, fallback, label){
+  if(readResult.status !== 'ok') return fallback;
+  try{ return JSON.parse(readResult.result.value); }
+  catch(error){
+    console.error('JSON inválido en '+label, error);
+    dataWriteLock = true;
+    showDataSafetyAlert('No se pudo interpretar '+label+'. Se bloquearon las escrituras para proteger la información.');
+    return fallback;
+  }
+}
+
+function numbersHaveMeaningfulData(map){
+  return Object.values(map || {}).some(v => v && (
+    v.status !== 'avail' || v.name || v.whats || v.insta || v.email || v.hasReceipt
+  ));
+}
+
+function historySuggestsPreviousSales(items){
+  return (items || []).some(h => /reservado\(s\)|Pago confirmado|liberado manualmente/i.test(h.action || ''));
+}
+
+function showDataSafetyAlert(message){
+  let box = document.getElementById('dataSafetyAlert');
+  if(!box){
+    box = document.createElement('div');
+    box.id = 'dataSafetyAlert';
+    box.style.cssText = 'position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:9999;max-width:860px;width:calc(100% - 24px);background:#7f1d1d;color:#fff;padding:14px 18px;border-radius:12px;box-shadow:0 12px 30px rgba(0,0,0,.3);font:600 13px/1.45 Poppins,sans-serif;text-align:center;';
+    document.body.appendChild(box);
+  }
+  box.textContent = message;
+}
+
 async function loadAll(){
-  /* Antes cada get() se esperaba uno por uno (6 viajes de ida y vuelta en fila),
-     lo que generaba el retraso visible al entrar/recargar (popup, botón de
-     "emprendimiento", etc. tardaban en aparecer). Ahora se piden todos a la vez
-     con Promise.all, así el tiempo total de carga es el del más lento de los 6,
-     no la suma de los 6. */
-  const [configResult, numbersResult, historyResult, updatesResult, prizesResult, sponsorsResult] = await Promise.all([
-    window.storage.get(STORAGE_KEY_CONFIG, true).catch(()=>null),
-    window.storage.get(STORAGE_KEY_NUMBERS, true).catch(()=>null),
-    window.storage.get(STORAGE_KEY_HISTORY, true).catch(()=>null),
-    window.storage.get(STORAGE_KEY_UPDATES, true).catch(()=>null),
-    window.storage.get(STORAGE_KEY_PRIZES, true).catch(()=>null),
-    window.storage.get(STORAGE_KEY_SPONSORS, true).catch(()=>null),
+  const [configRead, numbersRead, historyRead, updatesRead, prizesRead, sponsorsRead] = await Promise.all([
+    safeStorageRead(STORAGE_KEY_CONFIG),
+    safeStorageRead(STORAGE_KEY_NUMBERS),
+    safeStorageRead(STORAGE_KEY_HISTORY),
+    safeStorageRead(STORAGE_KEY_UPDATES),
+    safeStorageRead(STORAGE_KEY_PRIZES),
+    safeStorageRead(STORAGE_KEY_SPONSORS)
   ]);
 
-  if(configResult) config = Object.assign({}, config, JSON.parse(configResult.value));
-  else await window.storage.set(STORAGE_KEY_CONFIG, JSON.stringify(config), true);
+  // Nunca se debe tratar un error de red/permisos como si el documento no existiera.
+  const criticalError = [configRead, numbersRead].find(r=>r.status === 'error');
+  if(criticalError){
+    dataWriteLock = true;
+    showDataSafetyAlert('ERROR DE FIREBASE: no se cargaron los datos. La página quedó bloqueada y NO escribirá números vacíos. Revisa conexión y reglas de Firebase.');
+    console.error('Error crítico de carga:', criticalError.error);
+    return;
+  }
 
-  if(numbersResult) numbers = JSON.parse(numbersResult.value);
-  else { seedNumbers(); await persistNumbers(); }
+  config = Object.assign({}, config, parseStoredJson(configRead, {}, 'la configuración'));
+  history = parseStoredJson(historyRead, [], 'el historial');
+  updates = parseStoredJson(updatesRead, [], 'las actualizaciones');
+  prizes = parseStoredJson(prizesRead, [], 'los premios');
+  sponsors = parseStoredJson(sponsorsRead, [], 'los emprendimientos');
 
-  history = historyResult ? JSON.parse(historyResult.value) : [];
-  updates = updatesResult ? JSON.parse(updatesResult.value) : [];
-  prizes = prizesResult ? JSON.parse(prizesResult.value) : [];
-  sponsors = sponsorsResult ? JSON.parse(sponsorsResult.value) : [];
+  if(numbersRead.status === 'ok'){
+    numbers = parseStoredJson(numbersRead, {}, 'los números');
+  }else{
+    // Documento realmente ausente: no se crea ni se sobrescribe automáticamente.
+    numbers = {};
+    dataWriteLock = true;
+    showDataSafetyAlert('ALERTA: el documento de números no existe. No se creó una rifa vacía automáticamente. Usa la pestaña Recuperación.');
+  }
 
-  // Compatibilidad con datos "viejos": si un premio/sponsor no tiene id
-  // (formato de antes de separar las imágenes) le asignamos uno ahora.
+  try{
+    const receiptList = await window.storage.list('mpv:receipt:');
+    recoveryReceiptKeys = receiptList.keys || [];
+  }catch(error){
+    console.error('No se pudieron listar comprobantes:', error);
+    recoveryReceiptKeys = [];
+  }
+
+  if(!numbersHaveMeaningfulData(numbers) && (historySuggestsPreviousSales(history) || recoveryReceiptKeys.length)){
+    dataWriteLock = true;
+    showDataSafetyAlert('ALERTA DE POSIBLE VACIADO: hay historial o comprobantes, pero los números aparecen disponibles. No realices nuevas ventas. Abre Panel admin → Recuperación.');
+  }
+
   prizes.forEach((p,i)=>{ if(!p.id) p.id = 'p'+Date.now().toString(36)+i+Math.random().toString(36).slice(2,5); });
-  sponsors.forEach((s,i)=>{ if(!s.id) s.id = 's'+Date.now().toString(36)+i+Math.random().toString(36).slice(2,5); });
+  sponsors.forEach((sp,i)=>{ if(!sp.id) sp.id = 's'+Date.now().toString(36)+i+Math.random().toString(36).slice(2,5); });
 
-  // Las imágenes de premios y logos de sponsors NO viven en estos documentos
-  // (mpv:prizes / mpv:sponsors solo guardan texto + un id). Cada imagen se
-  // guarda en su propio documento chiquito para no chocar con el límite de
-  // 1MB por documento de Firestore. Acá las traemos todas en paralelo y las
-  // "pegamos" en memoria sobre cada premio/sponsor para poder mostrarlas.
-  //
-  // Caso especial (datos viejos, de antes de este esquema): si el premio/sponsor
-  // ya tiene una imagen embebida directamente en el documento (porque todavía no
-  // se había separado), la dejamos como está pero marcamos _imgSynced=false para
-  // que persistPrizes()/persistSponsors() la suba a su documento propio la
-  // próxima vez que se guarde algo — así nunca se "pierde" una imagen vieja.
   await Promise.all([
     Promise.all(prizes.map(async p=>{
       if(p.hasImg){
         try{ const r = await window.storage.get('mpv:prizeimg:'+p.id, true); p.img = r.value; p._imgSynced = true; }
         catch(e){ p.img = ''; p._imgSynced = false; }
-      } else if(p.img){
-        p._imgSynced = false;
-      }
+      }else if(p.img){ p._imgSynced = false; }
     })),
-    Promise.all(sponsors.map(async s=>{
-      if(s.hasLogo){
-        try{ const r = await window.storage.get('mpv:sponsorlogo:'+s.id, true); s.logo = r.value; s._imgSynced = true; }
-        catch(e){ s.logo = ''; s._imgSynced = false; }
-      } else if(s.logo){
-        s._imgSynced = false;
-      }
+    Promise.all(sponsors.map(async sp=>{
+      if(sp.hasLogo){
+        try{ const r = await window.storage.get('mpv:sponsorlogo:'+sp.id, true); sp.logo = r.value; sp._imgSynced = true; }
+        catch(e){ sp.logo = ''; sp._imgSynced = false; }
+      }else if(sp.logo){ sp._imgSynced = false; }
     }))
   ]);
 
@@ -1031,7 +1140,10 @@ function seedNumbers(){
   }
 }
 
-async function persistNumbers(){ await window.storage.set(STORAGE_KEY_NUMBERS, JSON.stringify(numbers), true); }
+async function persistNumbers(){
+  await window.storage.backupNumbers('antes-persistir-numeros').catch(()=>null);
+  await window.storage.set(STORAGE_KEY_NUMBERS, JSON.stringify(numbers), true);
+}
 async function persistConfig(){ await window.storage.set(STORAGE_KEY_CONFIG, JSON.stringify(config), true); }
 async function persistHistory(){ await window.storage.set(STORAGE_KEY_HISTORY, JSON.stringify(history), true); }
 async function persistUpdates(){ await window.storage.set(STORAGE_KEY_UPDATES, JSON.stringify(updates), true); }
@@ -1170,6 +1282,14 @@ function effectiveSeatStatus(v){
 function startNumbersRealtime(){
   if(unsubscribeNumbers || !window.storage.subscribeNumbers) return;
   unsubscribeNumbers = window.storage.subscribeNumbers(nextNumbers=>{
+    const hadData = numbersHaveMeaningfulData(numbers);
+    const incomingHasData = numbersHaveMeaningfulData(nextNumbers);
+    if(hadData && !incomingHasData){
+      dataWriteLock = true;
+      showDataSafetyAlert('ALERTA: Firebase intentó reemplazar números con una lista vacía. Se conservó la copia cargada en esta pestaña y se bloquearon las escrituras.');
+      console.error('Actualización vacía bloqueada por seguridad', nextNumbers);
+      return;
+    }
     numbers = nextNumbers;
 
     // Si otro dispositivo tomó un número que estaba seleccionado pero todavía
@@ -1575,7 +1695,14 @@ function startCountdown(){
 }
 
 /* ======================= PURCHASE FLOW ======================= */
+function ensureWritesAllowed(){
+  if(!dataWriteLock) return true;
+  showToast('Las ventas están bloqueadas temporalmente para proteger y recuperar los datos.');
+  return false;
+}
+
 function onSeatClick(n){
+  if(!ensureWritesAllowed()) return;
   const v = numbers[n] || {status:'avail'};
   const status = effectiveSeatStatus(v);
   if(status==='blocked'){ return; }
@@ -1621,6 +1748,7 @@ async function refreshNumbersFromServer(){
 }
 
 async function openMultiPurchase(){
+  if(!ensureWritesAllowed()) return;
   if(!selectedSeats.length) return;
   const sorted = [...selectedSeats].sort((a,b)=>a-b);
   setReserveButtonLoading(true);
@@ -1745,6 +1873,7 @@ function onFileChosen(input){
 }
 
 async function submitPurchase(){
+  if(!ensureWritesAllowed()) return;
   const name = document.getElementById('fName').value.trim();
   const whats = document.getElementById('fWhats').value.trim();
   if(!name || !whats){ showToast('Completa nombre y WhatsApp para continuar.'); return; }
@@ -2013,6 +2142,7 @@ function switchTab(tab){
   document.getElementById('tabAnuncio').style.display = tab==='anuncio'?'block':'none';
   document.getElementById('tabConfig').style.display = tab==='config'?'block':'none';
   document.getElementById('tabHistorial').style.display = tab==='historial'?'block':'none';
+  document.getElementById('tabRecuperacion').style.display = tab==='recuperacion'?'block':'none';
   if(tab==='transparencia') renderAdminUpdates();
   if(tab==='premios'){ renderAdminPrizes(); renderAdminSponsors(); }
   if(tab==='secciones') renderAdminQuienesFotos();
@@ -2094,6 +2224,7 @@ function closeReceipt(){
 }
 
 async function confirmPayment(n){
+  if(!ensureWritesAllowed()) return;
   const currentName = numbers[n]?.name || 'sin nombre';
   const result = await window.storage.setSeat(n, {
     status:'paid',
@@ -2105,6 +2236,7 @@ async function confirmPayment(n){
   showToast('Pago confirmado, número '+n);
 }
 async function releaseNumber(n){
+  if(!ensureWritesAllowed()) return;
   const result = await window.storage.setSeat(n, {status:'avail', name:'', whats:'', insta:'', email:'', amount:0, date:'', hasReceipt:false}, false);
   numbers = result.numbers;
   window.storage.delete('mpv:receipt:'+n, true).catch(()=>{});
@@ -2112,12 +2244,14 @@ async function releaseNumber(n){
   renderAll();
 }
 async function blockNumber(n){
+  if(!ensureWritesAllowed()) return;
   const result = await window.storage.setSeat(n, {status:'blocked'}, true);
   numbers = result.numbers;
   logHistory(`Número ${n} bloqueado`);
   renderAll();
 }
 async function unblockNumber(n){
+  if(!ensureWritesAllowed()) return;
   const result = await window.storage.setSeat(n, {status:'avail', name:'', whats:'', insta:'', email:'', amount:0, date:'', hasReceipt:false}, false);
   numbers = result.numbers;
   logHistory(`Número ${n} desbloqueado`);
@@ -2125,6 +2259,7 @@ async function unblockNumber(n){
 }
 
 async function addNumbersPrompt(){
+  if(!ensureWritesAllowed()) return;
   const extra = prompt('¿Cuántos números nuevos quieres agregar?');
   const n = parseInt(extra);
   if(!n || n<=0) return;
@@ -2139,6 +2274,7 @@ async function addNumbersPrompt(){
 }
 
 async function saveConfig(){
+  if(!ensureWritesAllowed()) return;
   const totalInput = document.getElementById('cfgTotalNumbers');
   const nuevoTotal = Number(totalInput.value);
 
@@ -2614,6 +2750,161 @@ function exportCSV(){
   a.href = URL.createObjectURL(blob);
   a.download = 'manos-por-venezuela-rifa.csv';
   a.click();
+}
+
+function downloadJsonFile(filename, data){
+  const blob = new Blob([JSON.stringify(data, null, 2)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+}
+
+async function downloadEmergencyBackup(){
+  const report = document.getElementById('recoveryReport');
+  if(report) report.textContent = 'Descargando todos los documentos de Firebase…';
+  try{
+    const all = await window.storage.exportAll();
+    downloadJsonFile('respaldo-emergencia-manos-por-venezuela-'+Date.now()+'.json', all);
+    if(report) report.innerHTML = '<b>Respaldo descargado.</b> Guárdalo sin modificar antes de continuar.';
+  }catch(error){
+    console.error(error);
+    if(report) report.textContent = 'No se pudo descargar el respaldo. Revisa permisos de lectura en Firebase.';
+  }
+}
+
+function baseRecoveryMap(){
+  const result = {};
+  for(let i=1;i<=config.totalNumbers;i++) result[i] = {status:'avail', name:'', whats:'', insta:'', email:'', amount:0, date:'', hasReceipt:false};
+  return result;
+}
+
+function parseNumberList(text){
+  return String(text || '').split(',').map(v=>Number(v.trim())).filter(Number.isInteger);
+}
+
+function buildRecoveryCandidate(){
+  const candidate = baseRecoveryMap();
+  const receipts = new Set(recoveryReceiptKeys.map(k=>Number(k.replace('mpv:receipt:',''))).filter(Number.isInteger));
+  const chronological = [...(history || [])].reverse();
+
+  chronological.forEach(entry=>{
+    const action = entry.action || '';
+    let match;
+
+    match = action.match(/^Número\(s\)\s+(.+?)\s+reservado\(s\)\s+por\s+(.+)$/i);
+    if(match){
+      parseNumberList(match[1]).forEach(n=>{
+        if(!candidate[n]) return;
+        candidate[n] = {...candidate[n], status:'pending', name:match[2].trim(), amount:Number(config.price)||0, date:entry.date||'', hasReceipt:receipts.has(n)};
+      });
+      return;
+    }
+
+    match = action.match(/^Pago confirmado para número\s+(\d+)\s+\((.*?)\)$/i);
+    if(match){
+      const n = Number(match[1]);
+      if(candidate[n]) candidate[n] = {...candidate[n], status:'paid', name:candidate[n].name || match[2].trim(), amount:Number(config.price)||0, date:entry.date||candidate[n].date, hasReceipt:receipts.has(n) || candidate[n].hasReceipt};
+      return;
+    }
+
+    match = action.match(/^Número\s+(\d+)\s+liberado manualmente/i);
+    if(match){ const n=Number(match[1]); if(candidate[n]) candidate[n] = {status:'avail', name:'', whats:'', insta:'', email:'', amount:0, date:'', hasReceipt:false}; return; }
+
+    match = action.match(/^Número\s+(\d+)\s+bloqueado/i);
+    if(match){ const n=Number(match[1]); if(candidate[n]) candidate[n] = {...candidate[n], status:'blocked'}; return; }
+
+    match = action.match(/^Número\s+(\d+)\s+desbloqueado/i);
+    if(match){ const n=Number(match[1]); if(candidate[n]) candidate[n] = {status:'avail', name:'', whats:'', insta:'', email:'', amount:0, date:'', hasReceipt:false}; }
+  });
+
+  receipts.forEach(n=>{
+    if(candidate[n] && candidate[n].status === 'avail'){
+      candidate[n] = {...candidate[n], status:'pending', name:'DATOS A VERIFICAR', amount:Number(config.price)||0, hasReceipt:true};
+    }
+  });
+
+  // Si el documento actual conserva algún dato real, tiene prioridad.
+  Object.entries(numbers || {}).forEach(([key,value])=>{
+    if(value && (value.status !== 'avail' || value.name || value.whats || value.hasReceipt)) candidate[key] = value;
+  });
+
+  return candidate;
+}
+
+async function analyzeRecovery(){
+  try{
+    const receiptList = await window.storage.list('mpv:receipt:');
+    recoveryReceiptKeys = receiptList.keys || [];
+  }catch(error){ console.error(error); }
+
+  recoveryCandidate = buildRecoveryCandidate();
+  const entries = Object.entries(recoveryCandidate).filter(([,v])=>v.status !== 'avail');
+  const paid = entries.filter(([,v])=>v.status === 'paid');
+  const pending = entries.filter(([,v])=>v.status === 'pending');
+  const blocked = entries.filter(([,v])=>v.status === 'blocked');
+  const amount = paid.reduce((sum,[,v])=>sum+Number(v.amount||0),0);
+  const report = document.getElementById('recoveryReport');
+
+  if(!entries.length){
+    report.innerHTML = '<b>No se encontraron movimientos reconstruibles.</b><br>Esto significa que el historial está vacío y no se detectaron comprobantes separados. Revisa Backups/PITR en Google Cloud y cualquier CSV descargado anteriormente.';
+    return;
+  }
+
+  report.innerHTML = `
+    <div><b>Resultado del análisis</b></div>
+    <div>Números detectados: <b>${entries.length}</b></div>
+    <div>Pagados reconstruidos: <b>${paid.length}</b> · Total estimado: <b>${fmt(amount)}</b></div>
+    <div>Pendientes reconstruidos: <b>${pending.length}</b></div>
+    <div>Bloqueados: <b>${blocked.length}</b></div>
+    <div>Comprobantes encontrados: <b>${recoveryReceiptKeys.length}</b></div>
+    <div style="margin-top:10px;color:#9f1239;"><b>Revisa el CSV antes de restaurar.</b> Los registros llamados “DATOS A VERIFICAR” provienen de comprobantes sin nombre recuperable en el historial.</div>
+    <div style="margin-top:12px;max-height:250px;overflow:auto;border-top:1px solid var(--line);padding-top:10px;">
+      ${entries.map(([n,v])=>`N° <b>${n}</b> · ${escapeHtml(v.status)} · ${escapeHtml(v.name||'sin nombre')} · ${fmt(v.amount||0)}<br>`).join('')}
+    </div>`;
+}
+
+function downloadRecoveryCSV(){
+  if(!recoveryCandidate) recoveryCandidate = buildRecoveryCandidate();
+  let csv = 'Numero,Estado,Nombre,WhatsApp,Instagram,Email,Monto,Fecha,Comprobante\n';
+  Object.entries(recoveryCandidate).sort((a,b)=>Number(a[0])-Number(b[0])).forEach(([n,v])=>{
+    if(v.status === 'avail') return;
+    const row=[n,v.status,v.name||'',v.whats||'',v.insta||'',v.email||'',v.amount||0,v.date||'',v.hasReceipt?'SI':'NO'];
+    csv += row.map(x=>`"${String(x).replace(/"/g,'""')}"`).join(',')+'\n';
+  });
+  const blob=new Blob([csv],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='recuperacion-rifa-'+Date.now()+'.csv';
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+}
+
+async function restoreRecoveryCandidate(){
+  if(!recoveryCandidate){
+    await analyzeRecovery();
+    if(!recoveryCandidate) return;
+  }
+  const meaningful = Object.values(recoveryCandidate).filter(v=>v.status !== 'avail').length;
+  if(!meaningful){ showToast('No hay datos reconstruidos para restaurar.'); return; }
+
+  const confirmation = prompt('Esta acción reemplazará el documento actual de números. Escribe RESTAURAR para continuar:');
+  if(confirmation !== 'RESTAURAR') return;
+
+  try{
+    await window.storage.backupNumbers('antes-restauracion-emergencia');
+    await window.storage.set(STORAGE_KEY_NUMBERS, JSON.stringify(recoveryCandidate), true);
+    numbers = recoveryCandidate;
+    dataWriteLock = false;
+    const warning = document.getElementById('dataSafetyAlert');
+    if(warning) warning.remove();
+    renderAll();
+    showToast('Números reconstruidos y restaurados. Descarga ahora el CSV y revisa cada registro.');
+  }catch(error){
+    console.error(error);
+    showToast('No se pudo restaurar. No se modificó la copia descargada.');
+  }
 }
 
 function renderHistory(){
