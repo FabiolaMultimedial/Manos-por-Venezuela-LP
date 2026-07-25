@@ -1437,7 +1437,7 @@ let sponsorsLastFrameTime = 0;
 let sponsorsPauseUntil = 0;
 
 function pauseSponsorsAutoscroll(){
-  sponsorsPauseUntil = performance.now() + 3500;
+  sponsorsPauseUntil = performance.now() + 1600;
 }
 
 function stopSponsorsAutoscroll(){
@@ -1453,14 +1453,14 @@ function startSponsorsAutoscroll(){
   const track = document.getElementById('sponsorsTrack');
   if(!viewport || !track || sponsors.length <= 5) return;
 
-  const speedPxPerSecond = 24;
+  const speedPxPerSecond = 42;
 
   const step = now=>{
     if(!sponsorsLastFrameTime) sponsorsLastFrameTime = now;
     const elapsed = Math.min(50, now - sponsorsLastFrameTime);
     sponsorsLastFrameTime = now;
 
-    const isPaused = now < sponsorsPauseUntil || viewport.matches(':hover') || viewport.classList.contains('dragging');
+    const isPaused = now < sponsorsPauseUntil || viewport.classList.contains('dragging');
 
     if(!isPaused){
       viewport.scrollLeft += speedPxPerSecond * (elapsed / 1000);
@@ -1502,7 +1502,7 @@ function renderSponsorsMarquee(){
 
   if(enoughToScroll){
     // Duplicamos la lista para conservar el movimiento continuo, pero ahora
-    // se hace con scrollLeft y se pausa al tocar, arrastrar o usar la rueda.
+    // se hace con scrollLeft, avanza automáticamente y solo se pausa brevemente al arrastrar o usar la rueda.
     track.innerHTML = sponsors.map(itemHtml).join('') + sponsors.map(itemHtml).join('');
     track.classList.remove('static');
   } else {
