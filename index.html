@@ -462,7 +462,7 @@ tr:last-child td{border-bottom:none;}
     </div>
 
     <button class="submit-btn" id="submitBtn" onclick="submitPurchase()">Reservar</button>
-    <div class="note-tiny">Tu número quedará reservado por 24 horas mientras confirmamos el pago.</div>
+    <div class="note-tiny" id="holdNote">Tus números se apartarán temporalmente mientras completas la reserva.</div>
   </div>
 </div>
 
@@ -699,7 +699,7 @@ tr:last-child td{border-bottom:none;}
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
   getFirestore, doc, getDoc, setDoc, deleteDoc,
-  collection, getDocs
+  collection, getDocs, runTransaction, onSnapshot
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const firebaseConfig = {
@@ -719,6 +719,34 @@ const COLLECTION = "mpv";
 /* Esta interfaz imita window.storage para no tener que tocar el resto del código.
    Cada "key" (mpv:config, mpv:numbers, etc.) se guarda como un documento en Firestore,
    dentro de la colección "mpv", con el contenido en el campo "value". */
+const NUMBERS_DOCUMENT_KEY = "mpv:numbers";
+
+function emptySeat(){
+  return {status:"avail", name:"", whats:"", insta:"", email:"", amount:0, date:"", hasReceipt:false};
+}
+
+function parseNumbersDocument(snap){
+  if(!snap.exists()) return {};
+  try{ return JSON.parse(snap.data().value || "{}"); }
+  catch(e){ return {}; }
+}
+
+function releaseExpiredHolds(current, now){
+  Object.keys(current).forEach(key=>{
+    const seat = current[key];
+    if(seat && seat.status === 'holding' && Number(seat.holdUntil || 0) <= now){
+      current[key] = emptySeat();
+    }
+  });
+}
+
+function reservationError(code, seats, message){
+  const error = new Error(message || code);
+  error.code = code;
+  error.seats = seats || [];
+  return error;
+}
+
 window.storage = {
   async get(key){
     const snap = await getDoc(doc(db, COLLECTION, key));
@@ -738,6 +766,123 @@ window.storage = {
     const keys = [];
     snaps.forEach(d => { if(!prefix || d.id.startsWith(prefix)) keys.push(d.id); });
     return { keys, prefix, shared: true };
+  },
+
+  /* Reserva atómica: Firestore vuelve a ejecutar la transacción si otro
+     dispositivo modificó los números al mismo tiempo. Solo uno puede ganar. */
+  async reserveSeats(seats, holdToken, holdMs){
+    const ref = doc(db, COLLECTION, NUMBERS_DOCUMENT_KEY);
+    return runTransaction(db, async transaction=>{
+      const snap = await transaction.get(ref);
+      const current = parseNumbersDocument(snap);
+      const now = Date.now();
+      releaseExpiredHolds(current, now);
+
+      const unavailable = seats.filter(seatNumber=>{
+        const seat = current[String(seatNumber)] || emptySeat();
+        if(seat.status === 'avail') return false;
+        return !(seat.status === 'holding' && seat.holdToken === holdToken && Number(seat.holdUntil||0) > now);
+      });
+
+      if(unavailable.length){
+        throw reservationError('seats-unavailable', unavailable, 'Uno o más números ya no están disponibles.');
+      }
+
+      const holdUntil = now + holdMs;
+      seats.forEach(seatNumber=>{
+        current[String(seatNumber)] = {
+          ...emptySeat(),
+          status:'holding',
+          holdToken,
+          holdUntil,
+          reservedAt:now
+        };
+      });
+
+      transaction.set(ref, { value: JSON.stringify(current) });
+      return { numbers:current, holdUntil };
+    });
+  },
+
+  /* Convierte la pre-reserva temporal en reserva pendiente de validación. */
+  async finalizeSeats(seats, holdToken, buyer){
+    const ref = doc(db, COLLECTION, NUMBERS_DOCUMENT_KEY);
+    return runTransaction(db, async transaction=>{
+      const snap = await transaction.get(ref);
+      const current = parseNumbersDocument(snap);
+      const now = Date.now();
+      releaseExpiredHolds(current, now);
+
+      const lost = seats.filter(seatNumber=>{
+        const seat = current[String(seatNumber)] || emptySeat();
+        return !(seat.status === 'holding' && seat.holdToken === holdToken && Number(seat.holdUntil||0) > now);
+      });
+      if(lost.length){
+        throw reservationError('hold-lost', lost, 'La reserva temporal venció o ya no te pertenece.');
+      }
+
+      seats.forEach(seatNumber=>{
+        current[String(seatNumber)] = {
+          status:'pending',
+          name:buyer.name,
+          whats:buyer.whats,
+          insta:buyer.insta,
+          email:buyer.email,
+          amount:buyer.price,
+          date:buyer.dateStr,
+          reservedAt:buyer.reservedAt,
+          hasReceipt:true
+        };
+      });
+
+      transaction.set(ref, { value: JSON.stringify(current) });
+      return { numbers:current };
+    });
+  },
+
+  /* Libera únicamente la pre-reserva perteneciente a este navegador. */
+  async releaseSeats(seats, holdToken){
+    const ref = doc(db, COLLECTION, NUMBERS_DOCUMENT_KEY);
+    return runTransaction(db, async transaction=>{
+      const snap = await transaction.get(ref);
+      const current = parseNumbersDocument(snap);
+      const now = Date.now();
+      releaseExpiredHolds(current, now);
+      let changed = false;
+
+      seats.forEach(seatNumber=>{
+        const key = String(seatNumber);
+        const seat = current[key];
+        if(seat && seat.status === 'holding' && seat.holdToken === holdToken){
+          current[key] = emptySeat();
+          changed = true;
+        }
+      });
+
+      if(changed) transaction.set(ref, { value: JSON.stringify(current) });
+      return { numbers:current };
+    });
+  },
+
+  /* Actualizaciones administrativas de un solo número sin sobrescribir los demás. */
+  async setSeat(seatNumber, value, merge){
+    const ref = doc(db, COLLECTION, NUMBERS_DOCUMENT_KEY);
+    return runTransaction(db, async transaction=>{
+      const snap = await transaction.get(ref);
+      const current = parseNumbersDocument(snap);
+      const key = String(seatNumber);
+      current[key] = merge ? {...(current[key] || emptySeat()), ...value} : value;
+      transaction.set(ref, { value: JSON.stringify(current) });
+      return { numbers:current };
+    });
+  },
+
+  subscribeNumbers(callback, onError){
+    const ref = doc(db, COLLECTION, NUMBERS_DOCUMENT_KEY);
+    return onSnapshot(ref, snap=>{
+      if(!snap.exists()) return;
+      callback(parseNumbersDocument(snap));
+    }, onError);
   }
 };
 
@@ -767,6 +912,15 @@ let editingSponsorIndex = -1;
 let selectedSeats = [];
 let uploadedFile = false;
 let uploadedFileData = null;
+
+const HOLD_MS = 10 * 60 * 1000; // 10 minutos para completar datos y subir el comprobante
+const reservationToken = (window.crypto && crypto.randomUUID)
+  ? crypto.randomUUID()
+  : 'hold-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+let heldSeats = [];
+let holdUntil = 0;
+let holdCountdownTimer = null;
+let unsubscribeNumbers = null;
 
 const STORAGE_KEY_CONFIG = "mpv:config";
 const STORAGE_KEY_NUMBERS = "mpv:numbers";
@@ -837,6 +991,7 @@ async function loadAll(){
   ]);
 
   renderAll();
+  startNumbersRealtime();
   startCountdown();
   startQuienesCarousel();
   startPrizesCarousel();
@@ -981,6 +1136,32 @@ function renderContribList(){
     </div>`).join('');
 }
 
+function effectiveSeatStatus(v){
+  if(v && v.status === 'holding' && Number(v.holdUntil || 0) <= Date.now()) return 'avail';
+  return (v && v.status) || 'avail';
+}
+
+function startNumbersRealtime(){
+  if(unsubscribeNumbers || !window.storage.subscribeNumbers) return;
+  unsubscribeNumbers = window.storage.subscribeNumbers(nextNumbers=>{
+    numbers = nextNumbers;
+
+    // Si otro dispositivo tomó un número que estaba seleccionado pero todavía
+    // no reservado, se quita de la selección inmediatamente.
+    selectedSeats = selectedSeats.filter(n=>{
+      const v = numbers[n] || {status:'avail'};
+      const status = effectiveSeatStatus(v);
+      return status === 'avail' || (status === 'holding' && v.holdToken === reservationToken);
+    });
+
+    renderGrid();
+    renderCounter();
+    renderContribList();
+    renderAdminStats();
+    renderAdminTable();
+  }, err=>console.error('Error de sincronización en tiempo real:', err));
+}
+
 function renderGrid(){
   const search = (document.getElementById('seatSearch')?.value||"").trim();
   const filter = document.getElementById('seatFilter')?.value || 'all';
@@ -989,8 +1170,10 @@ function renderGrid(){
   for(let i=1;i<=config.totalNumbers;i++){
     if(search && !String(i).includes(search)) continue;
     const v = numbers[i] || {status:'avail'};
-    if(filter!=='all' && v.status!==filter) continue;
-    let cls = v.status==='avail'?'avail':v.status==='pending'?'pending':v.status==='paid'?'paid':'blocked';
+    const status = effectiveSeatStatus(v);
+    const filterStatus = status === 'holding' ? 'pending' : status;
+    if(filter!=='all' && filterStatus!==filter) continue;
+    let cls = status==='avail'?'avail':(status==='holding'||status==='pending')?'pending':status==='paid'?'paid':'blocked';
     if(selectedSeats.includes(i)) cls += ' selected';
     html += `<div class="seat ${cls}" onclick="onSeatClick(${i})">${i}</div>`;
   }
@@ -1168,9 +1351,15 @@ function startCountdown(){
 /* ======================= PURCHASE FLOW ======================= */
 function onSeatClick(n){
   const v = numbers[n] || {status:'avail'};
-  if(v.status==='blocked'){ return; }
-  if(v.status==='paid'){ showToast('Este número ya fue pagado y confirmado.'); return; }
-  if(v.status==='pending'){ showToast('Este número está reservado, pendiente de pago.'); return; }
+  const status = effectiveSeatStatus(v);
+  if(status==='blocked'){ return; }
+  if(status==='paid'){ showToast('Este número ya fue pagado y confirmado.'); return; }
+  if(status==='pending'){ showToast('Este número está reservado, pendiente de pago.'); return; }
+  if(status==='holding'){
+    if(v.holdToken === reservationToken) return;
+    showToast('Otra persona está completando la reserva de este número.');
+    return;
+  }
   const idx = selectedSeats.indexOf(n);
   if(idx>-1) selectedSeats.splice(idx,1);
   else selectedSeats.push(n);
@@ -1191,28 +1380,104 @@ function clearSelection(){
   renderGrid();
 }
 
-function openMultiPurchase(){
+function setReserveButtonLoading(loading){
+  const btn = document.querySelector('#selectionBar .btn-go');
+  if(!btn) return;
+  btn.disabled = loading;
+  btn.textContent = loading ? 'Reservando...' : 'Reservar';
+}
+
+async function refreshNumbersFromServer(){
+  try{
+    const latest = await window.storage.get(STORAGE_KEY_NUMBERS, true);
+    numbers = JSON.parse(latest.value);
+  }catch(e){}
+}
+
+async function openMultiPurchase(){
   if(!selectedSeats.length) return;
   const sorted = [...selectedSeats].sort((a,b)=>a-b);
-  document.getElementById('modalTitle').textContent = sorted.length===1 ? ('Número '+sorted[0]) : (sorted.length+' números: '+sorted.join(', '));
-  document.getElementById('modalSub').textContent = sorted.length===1
-    ? 'Completa tus datos para reservar este número.'
-    : 'Completa tus datos para reservar estos '+sorted.length+' números juntos.';
-  document.getElementById('modalPrice').textContent = sorted.length>1
-    ? fmt(config.price*sorted.length)+' ('+fmt(config.price)+' c/u)'
-    : fmt(config.price);
-  document.getElementById('modalAlias').textContent = config.alias;
-  document.getElementById('fName').value='';
-  document.getElementById('fWhats').value='';
-  document.getElementById('fInsta').value='';
-  document.getElementById('fEmail').value='';
-  uploadedFile=false;
-  uploadedFileData=null;
-  document.getElementById('uploadBox').textContent='📎 Subir comprobante';
-  document.getElementById('uploadBox').classList.remove('has-file');
-  document.getElementById('purchaseOverlay').style.display='flex';
+  setReserveButtonLoading(true);
+
+  try{
+    const result = await window.storage.reserveSeats(sorted, reservationToken, HOLD_MS);
+    numbers = result.numbers;
+    heldSeats = sorted;
+    holdUntil = result.holdUntil;
+
+    document.getElementById('modalTitle').textContent = sorted.length===1 ? ('Número '+sorted[0]) : (sorted.length+' números: '+sorted.join(', '));
+    document.getElementById('modalSub').textContent = sorted.length===1
+      ? 'Completa tus datos para confirmar esta reserva temporal.'
+      : 'Completa tus datos para confirmar estos '+sorted.length+' números reservados temporalmente.';
+    document.getElementById('modalPrice').textContent = sorted.length>1
+      ? fmt(config.price*sorted.length)+' ('+fmt(config.price)+' c/u)'
+      : fmt(config.price);
+    document.getElementById('modalAlias').textContent = config.alias;
+    document.getElementById('fName').value='';
+    document.getElementById('fWhats').value='';
+    document.getElementById('fInsta').value='';
+    document.getElementById('fEmail').value='';
+    uploadedFile=false;
+    uploadedFileData=null;
+    document.getElementById('fileInput').value='';
+    document.getElementById('uploadBox').textContent='📎 Subir comprobante';
+    document.getElementById('uploadBox').classList.remove('has-file');
+    document.getElementById('purchaseOverlay').style.display='flex';
+    renderGrid();
+    startHoldCountdown();
+  }catch(e){
+    await refreshNumbersFromServer();
+    const taken = Array.isArray(e.seats) && e.seats.length ? e.seats.join(', ') : 'seleccionados';
+    selectedSeats = selectedSeats.filter(n=>effectiveSeatStatus(numbers[n] || {status:'avail'}) === 'avail');
+    renderGrid();
+    showToast('El/los número(s) '+taken+' acaba(n) de ser reservado(s) por otra persona.');
+  }finally{
+    setReserveButtonLoading(false);
+  }
 }
-function closeModal(){ document.getElementById('purchaseOverlay').style.display='none'; }
+
+function updateHoldNote(){
+  const note = document.getElementById('holdNote');
+  if(!note || !holdUntil) return;
+  const remaining = Math.max(0, holdUntil - Date.now());
+  const min = Math.floor(remaining / 60000);
+  const sec = Math.floor((remaining % 60000) / 1000);
+  note.textContent = `Tus números están apartados por ${min}:${String(sec).padStart(2,'0')} mientras completas la reserva. Luego se liberarán automáticamente.`;
+
+  if(remaining <= 0){
+    stopHoldCountdown();
+    showToast('La reserva temporal venció. Selecciona nuevamente los números.');
+    closeModal(true);
+  }
+}
+
+function startHoldCountdown(){
+  stopHoldCountdown();
+  updateHoldNote();
+  holdCountdownTimer = setInterval(updateHoldNote, 1000);
+}
+
+function stopHoldCountdown(){
+  if(holdCountdownTimer) clearInterval(holdCountdownTimer);
+  holdCountdownTimer = null;
+}
+
+async function closeModal(releaseHold=true){
+  document.getElementById('purchaseOverlay').style.display='none';
+  stopHoldCountdown();
+  const seatsToRelease = [...heldSeats];
+  heldSeats = [];
+  holdUntil = 0;
+  selectedSeats = [];
+
+  if(releaseHold && seatsToRelease.length){
+    try{
+      const result = await window.storage.releaseSeats(seatsToRelease, reservationToken);
+      numbers = result.numbers;
+    }catch(e){}
+  }
+  renderGrid();
+}
 function onFileChosen(input){
   if(input.files && input.files[0]){
     const file = input.files[0];
@@ -1257,51 +1522,53 @@ async function submitPurchase(){
   const name = document.getElementById('fName').value.trim();
   const whats = document.getElementById('fWhats').value.trim();
   if(!name || !whats){ showToast('Completa nombre y WhatsApp para continuar.'); return; }
-  if(!selectedSeats.length) return;
+  if(!heldSeats.length){ showToast('La reserva temporal ya no está activa.'); return; }
   const receipt = uploadedFileData || '';
   if(!receipt){ showToast('Debes adjuntar el comprobante de pago para continuar.'); return; }
+
   const insta = document.getElementById('fInsta').value.trim();
   const email = document.getElementById('fEmail').value.trim();
   const dateStr = new Date().toLocaleDateString('es-AR');
   const reservedAt = Date.now();
-  const seats = [...selectedSeats].sort((a,b)=>a-b);
+  const seats = [...heldSeats].sort((a,b)=>a-b);
   const amountTotal = config.price * seats.length;
 
   const submitBtn = document.getElementById('submitBtn');
   submitBtn.disabled = true;
-  submitBtn.textContent = 'Enviando reserva...';
+  submitBtn.textContent = 'Confirmando reserva...';
 
   try{
-    /* IMPORTANTE: el comprobante (imagen) se guarda en un documento propio por
-       número (mpv:receipt:<numero>), separado del documento "mpv:numbers" que
-       tiene el estado de todos los números de la rifa. Antes el comprobante se guardaba
-       DENTRO de "mpv:numbers", así que cada reserva nueva tenía que volver a
-       subir TODOS los comprobantes de todas las reservas anteriores otra vez
-       (el documento crecía sin parar). Eso era lo que hacía que en el celular,
-       con internet más lento, la reserva tardara varios minutos. Ahora cada
-       compra solo sube su propio comprobante, así que el tiempo de espera es
-       siempre el mismo sin importar cuántas reservas haya habido antes.
-    */
-    seats.forEach(seat=>{
-      numbers[seat] = {
-        status:'pending',
-        name, whats, insta, email,
-        amount: config.price,
-        date: dateStr,
-        reservedAt,
-        hasReceipt: true
-      };
-    });
-    await persistNumbers();
+    // La pre-reserva ya impide que otro comprador tome estos números.
+    // Primero subimos el comprobante y luego confirmamos, también mediante
+    // una transacción, que la pre-reserva sigue perteneciendo a este navegador.
     await Promise.all(seats.map(seat => window.storage.set('mpv:receipt:'+seat, receipt, true)));
 
+    let result;
+    try{
+      result = await window.storage.finalizeSeats(seats, reservationToken, {
+        name, whats, insta, email,
+        price:config.price,
+        dateStr,
+        reservedAt
+      });
+    }catch(e){
+      await Promise.all(seats.map(seat => window.storage.delete('mpv:receipt:'+seat, true).catch(()=>{})));
+      throw e;
+    }
+
+    numbers = result.numbers;
     logHistory(`Número(s) ${seats.join(', ')} reservado(s) por ${name}`);
-    selectedSeats = [];
+    await closeModal(false);
     renderAll();
-    closeModal();
     await mostrarFacturaReserva({ name, seats, amount: amountTotal, dateStr, reservedAt });
   }catch(e){
-    showToast('Hubo un problema al enviar la reserva. Revisa tu conexión e intenta de nuevo.');
+    if(e && (e.code === 'hold-lost' || e.code === 'seats-unavailable')){
+      await refreshNumbersFromServer();
+      await closeModal(false);
+      showToast('La reserva temporal venció o esos números ya no están disponibles. No se generó ningún comprobante de reserva.');
+    }else{
+      showToast('Hubo un problema al enviar la reserva. Tus números seguirán apartados hasta que termine el contador.');
+    }
   }finally{
     submitBtn.disabled = false;
     submitBtn.textContent = 'Reservar';
@@ -1485,9 +1752,9 @@ function closeFactura(){
   document.getElementById('facturaOverlay').style.display='none';
 }
 
-/* Se quitó la liberación automática de números "pendientes" a las 24hs.
-   Ahora una reserva se mantiene indefinidamente hasta que el administrador
-   la confirme como pagada o la libere manualmente desde el panel. */
+/* Las pre-reservas "holding" vencen a los 10 minutos. Una vez enviado el
+   comprobante, el estado cambia a "pending" y permanece así hasta que el
+   administrador confirme el pago o libere el número manualmente. */
 
 /* ======================= ADMIN ======================= */
 let adminAuthed = false;
@@ -1531,7 +1798,7 @@ function renderAdminStats(){
   document.getElementById('statTotal').textContent = fmt(totalRaised());
   document.getElementById('statSold').textContent = vals.filter(v=>v.status==='paid').length;
   document.getElementById('statAvail').textContent = vals.filter(v=>v.status==='avail').length;
-  document.getElementById('statPending').textContent = vals.filter(v=>v.status==='pending').length;
+  document.getElementById('statPending').textContent = vals.filter(v=>v.status==='pending' || v.status==='holding').length;
   const paidEntries = Object.entries(numbers).filter(([k,v])=>v.status==='paid');
   document.getElementById('statLast').textContent = paidEntries.length ? ('N° '+paidEntries[paidEntries.length-1][0]) : '—';
 }
@@ -1541,14 +1808,15 @@ function renderAdminTable(){
   const search = (document.getElementById('adminSearch').value||"").toLowerCase();
   const body = document.getElementById('adminTableBody');
   let rows = Object.entries(numbers);
-  if(filter!=='all') rows = rows.filter(([k,v])=>v.status===filter);
+  if(filter!=='all') rows = rows.filter(([k,v])=> filter==='pending' ? (v.status==='pending' || v.status==='holding') : v.status===filter);
   if(search) rows = rows.filter(([k,v])=> String(k).includes(search) || (v.name||"").toLowerCase().includes(search) || (v.whats||"").toLowerCase().includes(search));
   rows.sort((a,b)=>Number(a[0])-Number(b[0]));
   body.innerHTML = rows.map(([k,v])=>{
     const badge = v.status==='avail'?'<span class="badge avail">Disponible</span>':
+                  v.status==='holding'?'<span class="badge pending">En proceso</span>':
                   v.status==='pending'?'<span class="badge pending">Reservado</span>':
                   v.status==='paid'?'<span class="badge paid">Pagado</span>':'<span class="badge blocked">Bloqueado</span>';
-    const pago = v.status==='paid'?'Confirmado':v.status==='pending'?'Pendiente':'-';
+    const pago = v.status==='paid'?'Confirmado':v.status==='pending'?'Pendiente':v.status==='holding'?'Completando compra':'-';
     const receiptCell = (v.hasReceipt || v.receipt)
       ? `<button onclick="viewReceipt(${k})" style="background:#EAF1FF;color:var(--azul);border-radius:6px;padding:5px 10px;font-size:11px;font-weight:700;white-space:nowrap;">👁 Ver</button>`
       : `<span class="no-receipt">Sin comprobante</span>`;
@@ -1562,6 +1830,7 @@ function renderAdminTable(){
       <td>${receiptCell}</td>
       <td><div class="row-actions">
         ${v.status==='pending'?`<button class="confirm" onclick="confirmPayment(${k})">Confirmar pago</button><button class="release" onclick="releaseNumber(${k})">Liberar</button>`:''}
+        ${v.status==='holding'?`<button class="release" onclick="releaseNumber(${k})">Liberar</button>`:''}
         ${v.status==='avail'?`<button class="block" onclick="blockNumber(${k})">Bloquear</button>`:''}
         ${v.status==='blocked'?`<button class="confirm" onclick="unblockNumber(${k})">Desbloquear</button>`:''}
         ${v.status==='paid'?`<button class="release" onclick="releaseNumber(${k})">Revertir</button>`:''}
@@ -1599,29 +1868,32 @@ function closeReceipt(){
 }
 
 async function confirmPayment(n){
-  numbers[n].status='paid';
-  numbers[n].date = new Date().toLocaleDateString('es-AR');
-  await persistNumbers();
-  logHistory(`Pago confirmado para número ${n} (${numbers[n].name||'sin nombre'})`);
+  const currentName = numbers[n]?.name || 'sin nombre';
+  const result = await window.storage.setSeat(n, {
+    status:'paid',
+    date:new Date().toLocaleDateString('es-AR')
+  }, true);
+  numbers = result.numbers;
+  logHistory(`Pago confirmado para número ${n} (${currentName})`);
   renderAll();
   showToast('Pago confirmado, número '+n);
 }
 async function releaseNumber(n){
-  numbers[n] = {status:'avail', name:'', whats:'', insta:'', email:'', amount:0, date:'', hasReceipt:false};
-  await persistNumbers();
+  const result = await window.storage.setSeat(n, {status:'avail', name:'', whats:'', insta:'', email:'', amount:0, date:'', hasReceipt:false}, false);
+  numbers = result.numbers;
   window.storage.delete('mpv:receipt:'+n, true).catch(()=>{});
   logHistory(`Número ${n} liberado manualmente`);
   renderAll();
 }
 async function blockNumber(n){
-  numbers[n].status='blocked';
-  await persistNumbers();
+  const result = await window.storage.setSeat(n, {status:'blocked'}, true);
+  numbers = result.numbers;
   logHistory(`Número ${n} bloqueado`);
   renderAll();
 }
 async function unblockNumber(n){
-  numbers[n].status='avail';
-  await persistNumbers();
+  const result = await window.storage.setSeat(n, {status:'avail', name:'', whats:'', insta:'', email:'', amount:0, date:'', hasReceipt:false}, false);
+  numbers = result.numbers;
   logHistory(`Número ${n} desbloqueado`);
   renderAll();
 }
