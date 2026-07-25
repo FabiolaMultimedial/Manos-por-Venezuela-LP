@@ -122,13 +122,45 @@ button{font-family:inherit;cursor:pointer;border:none;}
 .receipt-thumb img{width:100%;height:100%;object-fit:cover;display:block;}
 .no-receipt{font-size:12px;color:var(--gris);}
 .prize-card{position:relative;flex:0 0 240px;max-width:240px;aspect-ratio:3/4;border-radius:20px;overflow:hidden;background:#0f1117;box-shadow:0 18px 40px -14px rgba(0,0,0,0.5);cursor:pointer;display:block;color:#fff;text-decoration:none;scroll-snap-align:start;}
-.prizes-track{display:flex;gap:18px;overflow-x:auto;scroll-behavior:smooth;scroll-snap-type:x mandatory;padding:4px 32px 44px;-ms-overflow-style:none;scrollbar-width:none;}
+.prizes-track{
+  display:flex;
+  gap:18px;
+  overflow-x:auto;
+  overflow-y:hidden;
+  scroll-behavior:smooth;
+  scroll-snap-type:x mandatory;
+  scroll-padding-inline:32px;
+  padding:4px 32px 44px;
+  -webkit-overflow-scrolling:touch;
+  overscroll-behavior-inline:contain;
+  touch-action:pan-x;
+  cursor:grab;
+  user-select:none;
+  -ms-overflow-style:none;
+  scrollbar-width:none;
+}
+.prizes-track.dragging{cursor:grabbing;scroll-behavior:auto;}
 
-.sponsors-marquee{width:100%;overflow:hidden;position:relative;-webkit-mask-image:linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);mask-image:linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);}
-.sponsors-track{display:flex;width:max-content;animation:sponsorsScroll linear infinite;}
-.sponsors-track:hover{animation-play-state:paused;}
-.sponsors-track.static{width:100%;justify-content:center;flex-wrap:wrap;animation:none;}
-@keyframes sponsorsScroll{ from{transform:translateX(0);} to{transform:translateX(-50%);} }
+.sponsors-marquee{
+  width:100%;
+  overflow-x:auto;
+  overflow-y:hidden;
+  position:relative;
+  scroll-behavior:smooth;
+  -webkit-overflow-scrolling:touch;
+  overscroll-behavior-inline:contain;
+  touch-action:pan-x;
+  cursor:grab;
+  user-select:none;
+  -ms-overflow-style:none;
+  scrollbar-width:none;
+  -webkit-mask-image:linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
+  mask-image:linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
+}
+.sponsors-marquee.dragging{cursor:grabbing;scroll-behavior:auto;}
+.sponsors-marquee::-webkit-scrollbar{display:none;}
+.sponsors-track{display:flex;width:max-content;}
+.sponsors-track.static{width:100%;justify-content:center;flex-wrap:wrap;}
 .sponsor-logo-item{display:flex;flex-direction:column;align-items:center;gap:8px;padding:0 26px;flex:0 0 auto;}
 .sponsor-logo-item img{width:62px;height:62px;border-radius:50%;object-fit:cover;border:1px solid var(--line);background:#fff;}
 .sponsor-logo-item span{font-size:12px;font-weight:600;color:var(--tinta);white-space:nowrap;max-width:110px;overflow:hidden;text-overflow:ellipsis;}
@@ -587,8 +619,8 @@ tr:last-child td{border-bottom:none;}
       </div>
 
       <div id="tabPremios" style="display:none;">
-        <h3 style="font-size:18px;margin-bottom:6px;">Emprendimientos que se han sumado (logos en movimiento)</h3>
-        <p style="font-size:13px;color:var(--gris);margin-bottom:14px;">Estos aparecen arriba de todo, como una fila de logos que se mueve sola en loop. Acá van TODOS los que se sumaron, aunque no todos sorteen premio en esta edición.</p>
+        <h3 style="font-size:18px;margin-bottom:6px;">Emprendimientos que se han sumado</h3>
+        <p style="font-size:13px;color:var(--gris);margin-bottom:14px;">Estos aparecen arriba como una fila de logos. Se mueve suavemente, pero también se puede deslizar con el dedo, el mouse o el trackpad. Acá van TODOS los que se sumaron, aunque no todos sorteen premio en esta edición.</p>
         <div class="settings-grid" style="margin-bottom:14px;">
           <div class="field"><label>Logo del emprendimiento</label>
             <div class="upload-box" id="sponsorLogoLabel" onclick="document.getElementById('newSponsorLogo').click()">📎 Subir logo</div>
@@ -999,7 +1031,6 @@ async function loadAll(){
   startNumbersRealtime();
   startCountdown();
   startQuienesCarousel();
-  startPrizesCarousel();
   maybeShowAnnouncement();
 }
 
@@ -1241,10 +1272,118 @@ function instagramUrl(handle){
   return h ? `https://www.instagram.com/${h}/` : '';
 }
 
+let prizeScrollFrame = null;
+
+function updatePrizeDots(){
+  const dots = document.querySelectorAll('#prizesDots .prize-dot');
+  dots.forEach((dot,idx)=>dot.classList.toggle('active', idx===prizeIndex));
+}
+
+function syncPrizeIndexFromScroll(){
+  const track = document.getElementById('prizesCarousel');
+  if(!track || !track.children.length) return;
+
+  let nearestIndex = 0;
+  let nearestDistance = Infinity;
+
+  Array.from(track.children).forEach((card,index)=>{
+    const targetLeft = card.offsetLeft - track.offsetLeft;
+    const distance = Math.abs(targetLeft - track.scrollLeft);
+    if(distance < nearestDistance){
+      nearestDistance = distance;
+      nearestIndex = index;
+    }
+  });
+
+  prizeIndex = nearestIndex;
+  updatePrizeDots();
+}
+
+function enableDragScroll(container, onInteraction){
+  if(!container || container.dataset.dragScrollReady === 'true') return;
+  container.dataset.dragScrollReady = 'true';
+
+  let dragging = false;
+  let moved = false;
+  let startX = 0;
+  let startScrollLeft = 0;
+
+  const pause = ()=>{
+    if(typeof onInteraction === 'function') onInteraction();
+  };
+
+  container.addEventListener('pointerdown', event=>{
+    if(event.pointerType === 'mouse' && event.button !== 0) return;
+    dragging = true;
+    moved = false;
+    startX = event.clientX;
+    startScrollLeft = container.scrollLeft;
+    container.classList.add('dragging');
+    pause();
+    try{ container.setPointerCapture(event.pointerId); }catch(e){}
+  });
+
+  container.addEventListener('pointermove', event=>{
+    if(!dragging) return;
+    const delta = event.clientX - startX;
+    if(Math.abs(delta) > 5) moved = true;
+    container.scrollLeft = startScrollLeft - delta;
+    pause();
+    if(event.pointerType === 'mouse') event.preventDefault();
+  });
+
+  const finishDrag = event=>{
+    if(!dragging) return;
+    dragging = false;
+    container.classList.remove('dragging');
+    pause();
+    try{ container.releasePointerCapture(event.pointerId); }catch(e){}
+    if(moved){
+      container.dataset.preventNextClick = 'true';
+      setTimeout(()=>{ container.dataset.preventNextClick = 'false'; }, 0);
+    }
+  };
+
+  container.addEventListener('pointerup', finishDrag);
+  container.addEventListener('pointercancel', finishDrag);
+  container.addEventListener('pointerleave', event=>{
+    if(event.pointerType === 'mouse' && dragging) finishDrag(event);
+  });
+
+  container.addEventListener('wheel', pause, {passive:true});
+  container.addEventListener('touchstart', pause, {passive:true});
+
+  container.addEventListener('click', event=>{
+    if(container.dataset.preventNextClick === 'true'){
+      event.preventDefault();
+      event.stopPropagation();
+      container.dataset.preventNextClick = 'false';
+    }
+  }, true);
+}
+
+function bindPrizeCarousel(){
+  const track = document.getElementById('prizesCarousel');
+  if(!track) return;
+
+  enableDragScroll(track);
+
+  if(track.dataset.scrollSyncReady !== 'true'){
+    track.dataset.scrollSyncReady = 'true';
+    track.addEventListener('scroll', ()=>{
+      if(prizeScrollFrame) cancelAnimationFrame(prizeScrollFrame);
+      prizeScrollFrame = requestAnimationFrame(syncPrizeIndexFromScroll);
+    }, {passive:true});
+  }
+}
+
 function renderPrizes(){
   const host = document.getElementById('prizesCarousel');
   if(!host) return;
   if(!prizes.length){ host.innerHTML=''; const d=document.getElementById('prizesDots'); if(d) d.innerHTML=''; return; }
+
+  if(prizeIndex >= prizes.length) prizeIndex = 0;
+
   host.innerHTML = prizes.map((p)=>{
     const link = instagramUrl(p.social);
     return `
@@ -1259,65 +1398,121 @@ function renderPrizes(){
       </div>
     </a>`;
   }).join('');
+
   const dots = document.getElementById('prizesDots');
   if(dots){
     dots.innerHTML = prizes.map((_,i)=>`<span class="prize-dot ${i===prizeIndex?'active':''}" onclick="goToPrize(${i})"></span>`).join('');
   }
+
+  bindPrizeCarousel();
   scrollToPrize(prizeIndex, false);
 }
+
 function scrollToPrize(i, smooth){
   const track = document.getElementById('prizesCarousel');
   if(!track) return;
   const card = track.children[i];
   if(!card) return;
-  track.scrollTo({ left: card.offsetLeft - track.offsetLeft, behavior: smooth===false ? 'auto' : 'smooth' });
-  const dots = document.querySelectorAll('#prizesDots .prize-dot');
-  dots.forEach((d,idx)=>d.classList.toggle('active', idx===i));
+  track.scrollTo({
+    left: card.offsetLeft - track.offsetLeft,
+    behavior: smooth===false ? 'auto' : 'smooth'
+  });
+  updatePrizeDots();
 }
+
 function prizeNav(dir){
   if(!prizes.length) return;
   prizeIndex = (prizeIndex + dir + prizes.length) % prizes.length;
   scrollToPrize(prizeIndex, true);
-  restartPrizesAutoplay();
 }
+
 function goToPrize(i){
   prizeIndex = i;
   scrollToPrize(prizeIndex, true);
-  restartPrizesAutoplay();
 }
-let prizesTimer = null;
-function startPrizesCarousel(){
-  if(prizesTimer) clearInterval(prizesTimer);
-  prizesTimer = setInterval(()=>{
-    if(!prizes.length) return;
-    prizeIndex = (prizeIndex + 1) % prizes.length;
-    scrollToPrize(prizeIndex, true);
-  }, 3500);
-}
-function restartPrizesAutoplay(){ startPrizesCarousel(); }
 
-/* ======================= SPONSORS (logos en movimiento) ======================= */
+/* ======================= SPONSORS (logos en movimiento + scroll manual) ======================= */
+let sponsorsAutoFrame = null;
+let sponsorsLastFrameTime = 0;
+let sponsorsPauseUntil = 0;
+
+function pauseSponsorsAutoscroll(){
+  sponsorsPauseUntil = performance.now() + 3500;
+}
+
+function stopSponsorsAutoscroll(){
+  if(sponsorsAutoFrame) cancelAnimationFrame(sponsorsAutoFrame);
+  sponsorsAutoFrame = null;
+  sponsorsLastFrameTime = 0;
+}
+
+function startSponsorsAutoscroll(){
+  stopSponsorsAutoscroll();
+
+  const viewport = document.querySelector('.sponsors-marquee');
+  const track = document.getElementById('sponsorsTrack');
+  if(!viewport || !track || sponsors.length <= 5) return;
+
+  const speedPxPerSecond = 24;
+
+  const step = now=>{
+    if(!sponsorsLastFrameTime) sponsorsLastFrameTime = now;
+    const elapsed = Math.min(50, now - sponsorsLastFrameTime);
+    sponsorsLastFrameTime = now;
+
+    const isPaused = now < sponsorsPauseUntil || viewport.matches(':hover') || viewport.classList.contains('dragging');
+
+    if(!isPaused){
+      viewport.scrollLeft += speedPxPerSecond * (elapsed / 1000);
+
+      // Como la lista está duplicada, al llegar a la mitad volvemos al mismo
+      // punto visual sin salto perceptible.
+      const loopWidth = track.scrollWidth / 2;
+      if(loopWidth > 0 && viewport.scrollLeft >= loopWidth){
+        viewport.scrollLeft -= loopWidth;
+      }
+    }
+
+    sponsorsAutoFrame = requestAnimationFrame(step);
+  };
+
+  sponsorsAutoFrame = requestAnimationFrame(step);
+}
+
 function renderSponsorsMarquee(){
   const track = document.getElementById('sponsorsTrack');
-  if(!track) return;
-  if(!sponsors.length){ track.innerHTML=''; return; }
+  const viewport = document.querySelector('.sponsors-marquee');
+  if(!track || !viewport) return;
+
+  stopSponsorsAutoscroll();
+
+  if(!sponsors.length){
+    track.innerHTML='';
+    viewport.scrollLeft = 0;
+    return;
+  }
+
   const itemHtml = (s)=>`
     <div class="sponsor-logo-item">
       ${s.logo ? `<img src="${s.logo}" alt="${escapeHtml(s.name||'')}">` : `<div style="width:62px;height:62px;border-radius:50%;background:#F0EEE8;"></div>`}
       <span>${escapeHtml(s.name||'')}</span>
     </div>`;
+
   const enoughToScroll = sponsors.length > 5;
+
   if(enoughToScroll){
-    // duplicamos la lista para que el loop sea infinito y continuo
+    // Duplicamos la lista para conservar el movimiento continuo, pero ahora
+    // se hace con scrollLeft y se pausa al tocar, arrastrar o usar la rueda.
     track.innerHTML = sponsors.map(itemHtml).join('') + sponsors.map(itemHtml).join('');
     track.classList.remove('static');
-    const duration = Math.max(14, sponsors.length * 3.2);
-    track.style.animationDuration = duration + 's';
   } else {
     track.innerHTML = sponsors.map(itemHtml).join('');
     track.classList.add('static');
-    track.style.animationDuration = '';
   }
+
+  viewport.scrollLeft = 0;
+  enableDragScroll(viewport, pauseSponsorsAutoscroll);
+  startSponsorsAutoscroll();
 }
 
 /* ======================= COUNTDOWN ======================= */
