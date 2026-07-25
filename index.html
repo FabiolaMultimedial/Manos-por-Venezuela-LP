@@ -1257,9 +1257,21 @@ function startQuienesCarousel(){
 /* ======================= PREMIOS / EMPRENDIMIENTOS (carrusel) ======================= */
 function instagramUrl(handle){
   if(!handle) return '';
-  let h = handle.trim().replace(/^@/,'');
-  if(/^https?:\/\//i.test(handle)) return handle.trim();
-  return h ? `https://www.instagram.com/${h}/` : '';
+
+  const value = handle.trim();
+  if(!value) return '';
+
+  // Acepta enlaces completos con protocolo.
+  if(/^https?:\/\//i.test(value)) return value;
+
+  // También acepta enlaces pegados sin https://
+  if(/^(www\.)?instagram\.com\//i.test(value)){
+    return 'https://' + value.replace(/^\/+/, '');
+  }
+
+  // Si se escribe solamente @usuario o usuario, construye el enlace.
+  const user = value.replace(/^@/, '').replace(/^\/+|\/+$/g, '');
+  return user ? `https://www.instagram.com/${user}/` : '';
 }
 
 let prizeScrollFrame = null;
@@ -1293,61 +1305,83 @@ function enableDragScroll(container, onInteraction){
   if(!container || container.dataset.dragScrollReady === 'true') return;
   container.dataset.dragScrollReady = 'true';
 
-  let dragging = false;
-  let moved = false;
+  let pointerDown = false;
+  let isDragging = false;
   let startX = 0;
   let startScrollLeft = 0;
+  let activePointerId = null;
+  let suppressClickUntil = 0;
+  const DRAG_THRESHOLD = 10;
 
   const pause = ()=>{
     if(typeof onInteraction === 'function') onInteraction();
   };
 
+  // En celulares dejamos que el desplazamiento táctil nativo del navegador
+  // haga el trabajo. Esta lógica personalizada se usa solamente con mouse.
   container.addEventListener('pointerdown', event=>{
-    if(event.pointerType === 'mouse' && event.button !== 0) return;
-    dragging = true;
-    moved = false;
+    if(event.pointerType !== 'mouse' || event.button !== 0) return;
+
+    pointerDown = true;
+    isDragging = false;
+    activePointerId = event.pointerId;
     startX = event.clientX;
     startScrollLeft = container.scrollLeft;
-    container.classList.add('dragging');
     pause();
-    try{ container.setPointerCapture(event.pointerId); }catch(e){}
   });
 
   container.addEventListener('pointermove', event=>{
-    if(!dragging) return;
+    if(!pointerDown || event.pointerId !== activePointerId) return;
+
     const delta = event.clientX - startX;
-    if(Math.abs(delta) > 5) moved = true;
+
+    // Un pequeño movimiento involuntario sigue contando como clic.
+    if(!isDragging && Math.abs(delta) < DRAG_THRESHOLD) return;
+
+    if(!isDragging){
+      isDragging = true;
+      container.classList.add('dragging');
+      try{ container.setPointerCapture(event.pointerId); }catch(e){}
+    }
+
     container.scrollLeft = startScrollLeft - delta;
     pause();
-    if(event.pointerType === 'mouse') event.preventDefault();
+    event.preventDefault();
   });
 
   const finishDrag = event=>{
-    if(!dragging) return;
-    dragging = false;
+    if(!pointerDown || event.pointerId !== activePointerId) return;
+
+    const dragged = isDragging;
+    pointerDown = false;
+    isDragging = false;
+    activePointerId = null;
     container.classList.remove('dragging');
     pause();
+
     try{ container.releasePointerCapture(event.pointerId); }catch(e){}
-    if(moved){
-      container.dataset.preventNextClick = 'true';
-      setTimeout(()=>{ container.dataset.preventNextClick = 'false'; }, 0);
-    }
+
+    // Solo bloqueamos el clic que se produce inmediatamente después
+    // de un arrastre real. Un clic normal sobre la tarjeta queda habilitado.
+    if(dragged) suppressClickUntil = performance.now() + 250;
   };
 
   container.addEventListener('pointerup', finishDrag);
   container.addEventListener('pointercancel', finishDrag);
   container.addEventListener('pointerleave', event=>{
-    if(event.pointerType === 'mouse' && dragging) finishDrag(event);
+    if(pointerDown && event.pointerType === 'mouse' && !isDragging){
+      pointerDown = false;
+      activePointerId = null;
+    }
   });
 
   container.addEventListener('wheel', pause, {passive:true});
   container.addEventListener('touchstart', pause, {passive:true});
 
   container.addEventListener('click', event=>{
-    if(container.dataset.preventNextClick === 'true'){
+    if(performance.now() < suppressClickUntil){
       event.preventDefault();
       event.stopPropagation();
-      container.dataset.preventNextClick = 'false';
     }
   }, true);
 }
@@ -1377,8 +1411,8 @@ function renderPrizes(){
   host.innerHTML = prizes.map((p)=>{
     const link = instagramUrl(p.social);
     return `
-    <a class="prize-card" ${link?`href="${link}" target="_blank" rel="noopener"`:''}>
-      ${p.img ? `<img src="${p.img}" alt="${escapeHtml(p.name||'')}">` : ''}
+    <a class="prize-card" draggable="false" ${link?`href="${link}" target="_blank" rel="noopener"`:''}>
+      ${p.img ? `<img src="${p.img}" alt="${escapeHtml(p.name||'')}" draggable="false">` : ''}
       <div class="prize-badge">★ Emprendimiento</div>
       ${p.social ? `<div class="prize-ig">📷</div>` : ''}
       <div class="prize-bottom">
