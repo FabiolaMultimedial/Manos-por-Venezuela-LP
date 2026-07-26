@@ -508,7 +508,7 @@ tr:last-child td{border-bottom:none;}
     <div class="modal-close" onclick="closeFactura()">✕</div>
     <img id="facturaImg" src="" alt="Comprobante de reserva" style="border-radius:14px;">
     <div style="margin-top:16px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">
-      <a id="facturaDownloadBtn" download="comprobante-reserva.png" href="#" style="background:var(--amarillo);color:#15171C;padding:12px 22px;border-radius:30px;font-weight:700;font-size:14px;">⬇ Descargar comprobante</a>
+      <button id="facturaDownloadBtn" type="button" onclick="downloadFacturaReserva()" style="background:var(--amarillo);color:#15171C;padding:12px 22px;border-radius:30px;font-weight:700;font-size:14px;">Guardar / compartir comprobante</button>
       <button onclick="closeFactura()" style="background:rgba(255,255,255,0.15);color:#fff;padding:12px 22px;border-radius:30px;font-weight:700;font-size:14px;">Cerrar</button>
     </div>
   </div>
@@ -1968,14 +1968,62 @@ function wrapCanvasText(ctx, text, x, y, maxWidth, lineHeight){
   return lines.length;
 }
 
+let facturaBlob = null;
+let facturaFileName = 'comprobante-reserva.png';
+let facturaPreviewUrl = '';
+
+function drawInstagramIcon(ctx, x, y, size, color){
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = Math.max(1.5, size * 0.12);
+
+  roundedRectPath(ctx, x, y, size, size, size * 0.28);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(x + size * 0.5, y + size * 0.5, size * 0.22, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(x + size * 0.76, y + size * 0.25, size * 0.07, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function canvasToPngBlob(canvas){
+  return new Promise((resolve, reject)=>{
+    if(canvas.toBlob){
+      canvas.toBlob(blob=>{
+        if(blob) resolve(blob);
+        else reject(new Error('No se pudo convertir el comprobante a imagen.'));
+      }, 'image/png');
+      return;
+    }
+
+    // Compatibilidad con navegadores antiguos que no implementan canvas.toBlob().
+    try{
+      const dataUrl = canvas.toDataURL('image/png');
+      const parts = dataUrl.split(',');
+      const binary = atob(parts[1]);
+      const bytes = new Uint8Array(binary.length);
+      for(let i=0;i<binary.length;i++) bytes[i] = binary.charCodeAt(i);
+      resolve(new Blob([bytes], {type:'image/png'}));
+    }catch(error){
+      reject(error);
+    }
+  });
+}
+
 async function buildFacturaImage({name, seats, amount, dateStr, reservedAt}){
   try{ if(document.fonts && document.fonts.ready) await document.fonts.ready; }catch(e){}
 
   const width = 680;
   const seatsLabel = seats.length>1 ? seats.join('  ·  ') : String(seats[0]);
 
-  // medimos cuántas líneas van a ocupar los números para calcular el alto del canvas
-  const measure = document.createElement('canvas').getContext('2d');
+  const measureCanvas = document.createElement('canvas');
+  const measure = measureCanvas.getContext('2d');
+  if(!measure) throw new Error('Canvas no disponible.');
   measure.font = '700 19px Poppins, Arial, sans-serif';
   const maxTextWidth = width - 120;
   const words = seatsLabel.split(' ');
@@ -1990,14 +2038,15 @@ async function buildFacturaImage({name, seats, amount, dateStr, reservedAt}){
   const height = 420 + (lineCount-1)*26 + (config.instagram ? 22 : 0);
 
   const canvas = document.createElement('canvas');
-  canvas.width = width; canvas.height = height;
+  canvas.width = width;
+  canvas.height = height;
   const ctx = canvas.getContext('2d');
+  if(!ctx) throw new Error('No se pudo crear el comprobante.');
 
-  // fondo
   ctx.fillStyle = '#FAF8F4';
-  roundedRectPath(ctx,0,0,width,height,26); ctx.fill();
+  roundedRectPath(ctx,0,0,width,height,26);
+  ctx.fill();
 
-  // franja tricolor arriba
   const barH = 8;
   ctx.fillStyle = '#FFCE00'; ctx.fillRect(0,0,width/3,barH);
   ctx.fillStyle = '#0033A0'; ctx.fillRect(width/3,0,width/3,barH);
@@ -2016,12 +2065,12 @@ async function buildFacturaImage({name, seats, amount, dateStr, reservedAt}){
 
   if(config.instagram){
     y += 22;
+    drawInstagramIcon(ctx, 40, y - 13, 14, '#0033A0');
     ctx.font = '600 13px Poppins, Arial, sans-serif';
     ctx.fillStyle = '#0033A0';
-    ctx.fillText('📷 ' + config.instagram, 40, y);
+    ctx.fillText(config.instagram, 61, y);
   }
 
-  // caja
   const boxTop = y + 26;
   const boxHeight = height - boxTop - 70;
   ctx.strokeStyle = '#E7E3DA';
@@ -2056,7 +2105,6 @@ async function buildFacturaImage({name, seats, amount, dateStr, reservedAt}){
   ctx.fillStyle = '#E4032E';
   ctx.fillText(fmt(amount), 62, iy);
 
-  // columna derecha: fecha + codigo
   ctx.textAlign = 'right';
   ctx.font = '700 11.5px Poppins, Arial, sans-serif';
   ctx.fillStyle = '#9AA0AC';
@@ -2073,38 +2121,103 @@ async function buildFacturaImage({name, seats, amount, dateStr, reservedAt}){
   ctx.fillText(code, width-62, boxTop+118);
   ctx.textAlign = 'left';
 
-  // badge de estado
   const badgeY = height - 46;
   ctx.fillStyle = '#FFF7DC';
-  roundedRectPath(ctx, 40, badgeY, width-80, 34, 10); ctx.fill();
+  roundedRectPath(ctx, 40, badgeY, width-80, 34, 10);
+  ctx.fill();
   ctx.fillStyle = '#8a6b00';
   ctx.font = '700 12.5px Poppins, Arial, sans-serif';
   ctx.textAlign = 'center';
-  ctx.fillText('⏳ RESERVADO · PENDIENTE DE CONFIRMACIÓN DE PAGO', width/2, badgeY+22);
+  ctx.fillText('RESERVADO · PENDIENTE DE CONFIRMACIÓN DE PAGO', width/2, badgeY+22);
   ctx.textAlign = 'left';
 
-  return canvas.toDataURL('image/png');
+  return canvas;
 }
 
 async function mostrarFacturaReserva(data){
-  let dataUrl;
   try{
-    dataUrl = await buildFacturaImage(data);
-  }catch(e){
+    const canvas = await buildFacturaImage(data);
+    const blob = await canvasToPngBlob(canvas);
+
+    facturaBlob = blob;
+    facturaFileName = 'reserva-manos-por-venezuela-' + data.seats.join('-') + '.png';
+
+    if(facturaPreviewUrl) URL.revokeObjectURL(facturaPreviewUrl);
+    facturaPreviewUrl = URL.createObjectURL(blob);
+
+    const img = document.getElementById('facturaImg');
+    img.src = facturaPreviewUrl;
+    img.alt = 'Comprobante de reserva de los números ' + data.seats.join(', ');
+
+    document.getElementById('facturaOverlay').style.display = 'flex';
+    showToast('Reserva registrada correctamente. Ahora puedes guardar el comprobante.');
+  }catch(error){
+    console.error('Error generando comprobante:', error);
     showToast(data.seats.length>1
-      ? `¡${data.seats.length} números reservados! Te contactaremos por WhatsApp para confirmar el pago.`
-      : '¡Número reservado! Te contactaremos por WhatsApp para confirmar el pago.');
+      ? `La reserva de ${data.seats.length} números quedó registrada, pero no se pudo generar la imagen.`
+      : 'La reserva quedó registrada, pero no se pudo generar la imagen.');
+  }
+}
+
+async function downloadFacturaReserva(){
+  if(!facturaBlob){
+    showToast('El comprobante todavía no está listo.');
     return;
   }
-  const img = document.getElementById('facturaImg');
-  const dlBtn = document.getElementById('facturaDownloadBtn');
-  img.src = dataUrl;
-  dlBtn.href = dataUrl;
-  dlBtn.setAttribute('download', 'reserva-manos-por-venezuela-'+data.seats.join('-')+'.png');
-  document.getElementById('facturaOverlay').style.display='flex';
+
+  const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+    (navigator.maxTouchPoints > 1 && /Macintosh/i.test(navigator.userAgent));
+
+  // En celulares es más confiable usar el menú nativo para guardar o compartir.
+  if(isMobile && navigator.share){
+    try{
+      const file = new File([facturaBlob], facturaFileName, {type:'image/png'});
+      if(!navigator.canShare || navigator.canShare({files:[file]})){
+        await navigator.share({
+          files:[file],
+          title:'Comprobante de reserva',
+          text:'Comprobante de reserva de Manos por Venezuela LP'
+        });
+        return;
+      }
+    }catch(error){
+      if(error && error.name === 'AbortError') return;
+      console.warn('No se pudo usar el menú para compartir:', error);
+    }
+  }
+
+  // Descarga convencional para computadoras.
+  if(!isMobile){
+    const url = URL.createObjectURL(facturaBlob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = facturaFileName;
+    link.rel = 'noopener';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 30000);
+    showToast('Comprobante descargado.');
+    return;
+  }
+
+  // Último respaldo para navegadores internos o celulares sin Web Share.
+  const opened = window.open(facturaPreviewUrl, '_blank', 'noopener');
+  if(opened){
+    showToast('Se abrió la imagen. Mantén presionado y elige “Guardar imagen”.');
+  }else{
+    showToast('Tu navegador bloqueó la apertura. Mantén presionada la imagen visible para guardarla.');
+  }
 }
+
 function closeFactura(){
   document.getElementById('facturaOverlay').style.display='none';
+  document.getElementById('facturaImg').src='';
+  if(facturaPreviewUrl){
+    URL.revokeObjectURL(facturaPreviewUrl);
+    facturaPreviewUrl = '';
+  }
+  facturaBlob = null;
 }
 
 /* Las pre-reservas "holding" vencen a los 10 minutos. Una vez enviado el
